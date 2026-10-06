@@ -93,6 +93,17 @@ Calling AE Title: valor de ALLOWED_CALLING_AE
 
 Vários Calling AEs podem ser separados por vírgula. Um Calling AE diferente é rejeitado antes de receber imagens. O receptor também aceita C-ECHO. Verifique a porta no host com `ss -ltnp | grep 11112` e teste com `tests/send_test_study.py`.
 
+### Dois destinos no mesmo IP e porta
+
+É possível separar os estudos de dois usuários sem abrir outra porta. Mantenha o AE principal e acrescente os outros destinos no `.env`:
+
+```text
+DICOM_AE_TITLE=VITOR
+DICOM_EXTRA_AE_TITLES=FELIPE
+```
+
+Cadastre no PACS de origem dois destinos com o mesmo host e porta, mudando apenas o **Called AE Title**: `VITOR` ou `FELIPE`. O MiniPACS aceita apenas esses destinos e grava o Called AE como `destination_ae` em cada estudo; ele aparece na tabela administrativa e no retorno da API externa. Para o portal, use `GET /api/v1/studies?destination_ae=VITOR` (ou `FELIPE`) no backend, após autorizar o usuário. O mesmo `StudyInstanceUID` não pode ser recebido por dois destinos diferentes, evitando mistura acidental de acervos.
+
 ## Operação
 
 ```bash
@@ -137,7 +148,7 @@ docker compose up -d --force-recreate web
 Os endpoints são publicados no mesmo domínio HTTPS do MiniPACS:
 
 ```text
-GET /api/v1/studies?q=texto
+GET /api/v1/studies?q=texto&destination_ae=VITOR
 GET /api/v1/studies/{StudyInstanceUID}
 GET /api/v1/studies/{StudyInstanceUID}/download
 ```

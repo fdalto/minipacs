@@ -19,7 +19,7 @@ def clean_text(value: object) -> str:
     return str(value).strip() if value is not None else ""
 
 
-def extract_metadata(dataset: Dataset, source_ae: str) -> dict[str, str]:
+def extract_metadata(dataset: Dataset, source_ae: str, destination_ae: str = "") -> dict[str, str]:
     get = lambda key: clean_text(getattr(dataset, key, ""))
     return {
         "patient_id": get("PatientID"), "patient_name": get("PatientName"),
@@ -28,6 +28,7 @@ def extract_metadata(dataset: Dataset, source_ae: str) -> dict[str, str]:
         "modality": get("Modality"), "study_instance_uid": get("StudyInstanceUID"),
         "series_instance_uid": get("SeriesInstanceUID"), "sop_instance_uid": get("SOPInstanceUID"),
         "instance_number": get("InstanceNumber"), "source_ae": source_ae.strip(),
+        "destination_ae": destination_ae.strip().upper(),
     }
 
 
@@ -41,17 +42,22 @@ def build_handlers(settings: Settings):
 
     def handle_requested(event):
         calling = event.assoc.requestor.ae_title.strip().upper()
-        if not settings.allowed_calling_aes or calling not in settings.allowed_calling_aes:
+        called = event.assoc.requestor.primitive.called_ae_title.strip().upper()
+        if called not in settings.dicom_destination_aes:
+            logger.warning("Rejected DICOM association for unapproved Called AE: %s", called or "<empty>")
+            event.assoc.reject(0x01, 0x01, 0x07)
+        elif not settings.allowed_calling_aes or calling not in settings.allowed_calling_aes:
             logger.warning("Rejected DICOM association from unapproved Calling AE: %s", calling or "<empty>")
             event.assoc.reject(0x01, 0x01, 0x07)
 
     def handle_store(event):
         source_ae = event.assoc.requestor.ae_title.strip()
+        destination_ae = event.assoc.requestor.primitive.called_ae_title.strip().upper()
         try:
             dataset = event.dataset
             # pynetdicom exposes the negotiated file meta separately; retain it on disk.
             dataset.file_meta = event.file_meta
-            metadata = extract_metadata(dataset, source_ae)
+            metadata = extract_metadata(dataset, source_ae, destination_ae)
             study_uid = _safe_uid(metadata["study_instance_uid"])
             series_uid = _safe_uid(metadata["series_instance_uid"])
             sop_uid = _safe_uid(metadata["sop_instance_uid"])
@@ -74,7 +80,12 @@ def build_handlers(settings: Settings):
                     created_target = True
                 except FileExistsError:
                     created_target = False
-                added = store_instance(settings.db_path, metadata, relative, file_size, settings.retention_days) if created_target else False
+                try:
+                    added = store_instance(settings.db_path, metadata, relative, file_size, settings.retention_days) if created_target else False
+                except Exception:
+                    if created_target:
+                        target.unlink(missing_ok=True)
+                    raise
                 temporary.unlink(missing_ok=True)
                 if added:
                     logger.info("Stored DICOM SOP instance for study %s", study_uid)
@@ -108,7 +119,9 @@ def run() -> None:
         logger.error("ALLOWED_CALLING_AE is empty; refusing to start an unauthenticated DICOM receiver")
         sys.exit(2)
     ae = AE(ae_title=settings.dicom_ae_title)
-    ae.require_called_aet = True
+    # Several approved Called AE Titles share this TCP listener. Validation is
+    # performed in EVT_REQUESTED against DICOM_AE_TITLE plus the extra titles.
+    ae.require_called_aet = False
     ae.maximum_associations = 10
     ae.acse_timeout = 30
     ae.dimse_timeout = 120
@@ -117,7 +130,7 @@ def run() -> None:
         ae.add_supported_context(context.abstract_syntax, context.transfer_syntax)
     for context in VerificationPresentationContexts:
         ae.add_supported_context(context.abstract_syntax, context.transfer_syntax)
-    logger.info("DICOM SCP listening on 0.0.0.0:%s with AE %s", settings.dicom_port, settings.dicom_ae_title)
+    logger.info("DICOM SCP listening on 0.0.0.0:%s for Called AEs %s", settings.dicom_port, ", ".join(sorted(settings.dicom_destination_aes)))
     ae.start_server(("0.0.0.0", settings.dicom_port), block=True, evt_handlers=build_handlers(settings))
 
 

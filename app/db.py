@@ -13,7 +13,7 @@ CREATE TABLE IF NOT EXISTS studies (
   patient_id TEXT NOT NULL DEFAULT '', patient_name TEXT NOT NULL DEFAULT '',
   study_date TEXT NOT NULL DEFAULT '', study_time TEXT NOT NULL DEFAULT '',
   accession_number TEXT NOT NULL DEFAULT '', study_description TEXT NOT NULL DEFAULT '',
-  modality TEXT NOT NULL DEFAULT '', source_ae TEXT NOT NULL DEFAULT '',
+  modality TEXT NOT NULL DEFAULT '', source_ae TEXT NOT NULL DEFAULT '', destination_ae TEXT NOT NULL DEFAULT '',
   received_at TEXT NOT NULL, last_received_at TEXT NOT NULL, image_count INTEGER NOT NULL DEFAULT 0,
   total_size_bytes INTEGER NOT NULL DEFAULT 0, retention_until TEXT NOT NULL,
   status TEXT NOT NULL DEFAULT 'receiving' CHECK(status IN ('receiving','ready','deleting'))
@@ -54,6 +54,11 @@ def connect(path: Path) -> sqlite3.Connection:
 def initialize(path: Path) -> None:
     with connect(path) as conn:
         conn.executescript(SCHEMA)
+        # SQLite does not apply new columns from CREATE TABLE IF NOT EXISTS to
+        # installations created by earlier MiniPACS releases.
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(studies)")}
+        if "destination_ae" not in columns:
+            conn.execute("ALTER TABLE studies ADD COLUMN destination_ae TEXT NOT NULL DEFAULT ''")
 
 
 @contextmanager
@@ -82,17 +87,25 @@ def store_instance(path: Path, metadata: dict[str, str], relative_path: str, fil
     retention = iso(timestamp + timedelta(days=retention_days))
     study_uid, sop_uid = metadata["study_instance_uid"], metadata["sop_instance_uid"]
     with transaction(path) as conn:
+        study = conn.execute("SELECT status, destination_ae FROM studies WHERE study_instance_uid=?", (study_uid,)).fetchone()
+        if study and study["status"] == "deleting":
+            raise RuntimeError("study is being deleted")
+        if study and study["destination_ae"] and study["destination_ae"] != metadata["destination_ae"]:
+            raise ValueError("study instance UID already belongs to another destination AE")
         existing = conn.execute("SELECT 1 FROM instances WHERE sop_instance_uid=?", (sop_uid,)).fetchone()
         if existing:
             return False
-        study = conn.execute("SELECT status FROM studies WHERE study_instance_uid=?", (study_uid,)).fetchone()
-        if study and study["status"] == "deleting":
-            raise RuntimeError("study is being deleted")
         if not study:
-            conn.execute("""INSERT INTO studies VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, 'receiving')""",
+            # Name every column: a pre-existing database receives destination_ae
+            # through ALTER TABLE, where SQLite appends it after status.
+            conn.execute("""INSERT INTO studies (
+                study_instance_uid, patient_id, patient_name, study_date, study_time,
+                accession_number, study_description, modality, source_ae, destination_ae,
+                received_at, last_received_at, image_count, total_size_bytes, retention_until, status
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, 'receiving')""",
                          (study_uid, metadata["patient_id"], metadata["patient_name"], metadata["study_date"],
                           metadata["study_time"], metadata["accession_number"], metadata["study_description"],
-                          metadata["modality"], metadata["source_ae"], received, received, retention))
+                          metadata["modality"], metadata["source_ae"], metadata["destination_ae"], received, received, retention))
         conn.execute("""INSERT INTO instances VALUES (?, ?, ?, ?, ?, ?, ?)""",
                      (sop_uid, study_uid, metadata["series_instance_uid"], metadata["instance_number"], relative_path, file_size, received))
         conn.execute("""UPDATE studies SET last_received_at=?, retention_until=?, status='receiving',
@@ -101,21 +114,31 @@ def store_instance(path: Path, metadata: dict[str, str], relative_path: str, fil
     return True
 
 
-def list_studies(path: Path, query: str = "") -> list[dict[str, Any]]:
+def list_studies(path: Path, query: str = "", destination_ae: str = "") -> list[dict[str, Any]]:
     with connect(path) as conn:
+        destination = destination_ae.strip().upper()
+        clauses = ["status != 'deleting'"]
+        parameters: list[str] = []
+        if destination:
+            clauses.append("destination_ae = ?")
+            parameters.append(destination)
         if query:
             like = f"%{query.strip()}%"
-            rows = conn.execute("""SELECT * FROM studies WHERE status != 'deleting' AND
-              (patient_name LIKE ? OR patient_id LIKE ? OR study_description LIKE ? OR accession_number LIKE ? OR study_date LIKE ?)
-              ORDER BY last_received_at DESC""", (like, like, like, like, like)).fetchall()
-        else:
-            rows = conn.execute("SELECT * FROM studies WHERE status != 'deleting' ORDER BY last_received_at DESC").fetchall()
+            clauses.append("(patient_name LIKE ? OR patient_id LIKE ? OR study_description LIKE ? OR accession_number LIKE ? OR study_date LIKE ? OR destination_ae LIKE ?)")
+            parameters.extend((like, like, like, like, like, like))
+        rows = conn.execute(
+            f"SELECT * FROM studies WHERE {' AND '.join(clauses)} ORDER BY last_received_at DESC", parameters
+        ).fetchall()
     return [dict(row) for row in rows]
 
 
-def summary(path: Path) -> dict[str, int]:
+def summary(path: Path, destination_ae: str = "") -> dict[str, int]:
     with connect(path) as conn:
-        row = conn.execute("SELECT COUNT(*) studies, COALESCE(SUM(image_count),0) images, COALESCE(SUM(total_size_bytes),0) bytes FROM studies WHERE status != 'deleting'").fetchone()
+        destination = destination_ae.strip().upper()
+        if destination:
+            row = conn.execute("SELECT COUNT(*) studies, COALESCE(SUM(image_count),0) images, COALESCE(SUM(total_size_bytes),0) bytes FROM studies WHERE status != 'deleting' AND destination_ae = ?", (destination,)).fetchone()
+        else:
+            row = conn.execute("SELECT COUNT(*) studies, COALESCE(SUM(image_count),0) images, COALESCE(SUM(total_size_bytes),0) bytes FROM studies WHERE status != 'deleting'").fetchone()
     return dict(row)
 
 

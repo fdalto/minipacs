@@ -11,8 +11,8 @@ from app.dicom_uid import validate_uid
 from app.web import app
 
 
-def metadata(study="1.2.3", series="1.2.3.4", sop="1.2.3.4.5"):
-    return {"patient_id":"P1","patient_name":"Patient Test","study_date":"20260101","study_time":"120000","accession_number":"A1","study_description":"Synthetic","modality":"OT","study_instance_uid":study,"series_instance_uid":series,"sop_instance_uid":sop,"instance_number":"1","source_ae":"TESTSCU"}
+def metadata(study="1.2.3", series="1.2.3.4", sop="1.2.3.4.5", destination="VITOR"):
+    return {"patient_id":"P1","patient_name":"Patient Test","study_date":"20260101","study_time":"120000","accession_number":"A1","study_description":"Synthetic","modality":"OT","study_instance_uid":study,"series_instance_uid":series,"sop_instance_uid":sop,"instance_number":"1","source_ae":"TESTSCU","destination_ae":destination}
 
 
 def fresh_db(tmp_path: Path) -> Path:
@@ -31,6 +31,30 @@ def test_study_insert_and_duplicate_sop(tmp_path):
     assert not store_instance(path, metadata(), "anything", 10, 15)
     study = get_study(path, "1.2.3")
     assert study["image_count"] == 1 and study["total_size_bytes"] == 10
+    assert study["destination_ae"] == "VITOR"
+
+
+def test_study_cannot_cross_destination_ae_boundaries(tmp_path):
+    import pytest
+    path = fresh_db(tmp_path)
+    assert store_instance(path, metadata(), "first", 10, 15)
+    with pytest.raises(ValueError, match="destination AE"):
+        store_instance(path, metadata(sop="1.2.3.4.6", destination="FELIPE"), "second", 10, 15)
+
+
+def test_existing_database_is_migrated_with_destination_ae(tmp_path):
+    path = tmp_path / "legacy.sqlite3"
+    with connect(path) as conn:
+        conn.execute("""CREATE TABLE studies (
+            study_instance_uid TEXT PRIMARY KEY, patient_id TEXT NOT NULL DEFAULT '', patient_name TEXT NOT NULL DEFAULT '',
+            study_date TEXT NOT NULL DEFAULT '', study_time TEXT NOT NULL DEFAULT '', accession_number TEXT NOT NULL DEFAULT '',
+            study_description TEXT NOT NULL DEFAULT '', modality TEXT NOT NULL DEFAULT '', source_ae TEXT NOT NULL DEFAULT '',
+            received_at TEXT NOT NULL, last_received_at TEXT NOT NULL, image_count INTEGER NOT NULL DEFAULT 0,
+            total_size_bytes INTEGER NOT NULL DEFAULT 0, retention_until TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'receiving'
+        )""")
+    initialize(path)
+    assert store_instance(path, metadata(), "legacy-path", 10, 15)
+    assert get_study(path, "1.2.3")["destination_ae"] == "VITOR"
 
 
 def test_retention_is_from_receipt_time(tmp_path):

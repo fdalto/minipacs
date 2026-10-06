@@ -214,8 +214,8 @@ def index(request: Request):
 
 
 @app.get("/api/studies")
-def studies(request: Request, q: str = "", username: Annotated[str, Depends(current_user)] = ""):
-    return {"studies": list_studies(settings.db_path, q[:200]), "summary": summary(settings.db_path)}
+def studies(request: Request, q: str = "", destination_ae: str = "", username: Annotated[str, Depends(current_user)] = ""):
+    return {"studies": list_studies(settings.db_path, q[:200], destination_ae), "summary": summary(settings.db_path, destination_ae)}
 
 
 @app.delete("/api/studies/{study_uid}")
@@ -290,6 +290,7 @@ def external_study(study: dict) -> dict[str, object]:
         "accession_number": study["accession_number"],
         "study_description": study["study_description"],
         "modality": study["modality"],
+        "destination_ae": study["destination_ae"],
         "received_at": study["received_at"],
         "last_received_at": study["last_received_at"],
         "image_count": study["image_count"],
@@ -299,9 +300,9 @@ def external_study(study: dict) -> dict[str, object]:
 
 
 @app.get("/api/v1/studies")
-def external_studies(request: Request, q: str = "", principal: Annotated[str, Depends(external_api_principal)] = ""):
-    studies = [external_study(study) for study in list_studies(settings.db_path, q[:200])]
-    return {"studies": studies, "summary": summary(settings.db_path)}
+def external_studies(request: Request, q: str = "", destination_ae: str = "", principal: Annotated[str, Depends(external_api_principal)] = ""):
+    studies = [external_study(study) for study in list_studies(settings.db_path, q[:200], destination_ae)]
+    return {"studies": studies, "summary": summary(settings.db_path, destination_ae)}
 
 
 @app.get("/api/v1/studies/{study_uid}")

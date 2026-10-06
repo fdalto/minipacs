@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import string
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -17,6 +18,7 @@ class Settings:
     tmp_dir: Path
     logs_dir: Path
     dicom_ae_title: str
+    dicom_destination_aes: frozenset[str]
     dicom_port: int
     allowed_calling_aes: frozenset[str]
     retention_days: int
@@ -43,13 +45,24 @@ def load_settings() -> Settings:
     allowed = frozenset(
         item.strip().upper() for item in os.getenv("ALLOWED_CALLING_AE", "").split(",") if item.strip()
     )
+    primary_ae = os.getenv("DICOM_AE_TITLE", "MINIPACS").strip().upper()
+    extra_destination_aes = {
+        item.strip().upper()
+        for item in os.getenv("DICOM_EXTRA_AE_TITLES", "").split(",")
+        if item.strip()
+    }
+    destination_aes = frozenset({primary_ae, *extra_destination_aes})
+    for ae_title in destination_aes:
+        if not ae_title or len(ae_title) > 16 or any(char not in string.printable or char.isspace() for char in ae_title):
+            raise ValueError("DICOM AE Titles must be 1-16 printable non-space ASCII characters")
     return Settings(
         root=root,
         data_dir=state_root / "data",
         db_path=state_root / "db" / "minipacs.sqlite3",
         tmp_dir=state_root / "tmp",
         logs_dir=state_root / "logs",
-        dicom_ae_title=os.getenv("DICOM_AE_TITLE", "MINIPACS").strip().upper(),
+        dicom_ae_title=primary_ae,
+        dicom_destination_aes=destination_aes,
         dicom_port=int(os.getenv("DICOM_PORT", "11112")),
         allowed_calling_aes=allowed,
         retention_days=max(1, int(os.getenv("RETENTION_DAYS", "15"))),
