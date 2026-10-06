@@ -1,0 +1,4 @@
+<!doctype html>
+<html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Entrar — MiniPACS</title><link rel="stylesheet" href="/static/site.css"></head>
+<body class="login-page"><main class="login-card"><h1>MiniPACS</h1><p>Área administrativa</p>{% if error %}<div class="error">{{ error }}</div>{% endif %}
+<form method="post" action="/login" autocomplete="on"><label>Usuário<input name="username" required autocomplete="username"></label><label>Senha<input type="password" name="password" required autocomplete="current-password"></label><button>Entrar</button></form></main></body></html>

@@ -1,0 +1,120 @@
+# MiniPACS
+
+MiniPACS é um receptor DICOM C-STORE temporário e uma interface web administrativa simples. Ele armazena estudos por `StudyInstanceUID`, elimina estudos após uma retenção configurável (15 dias por padrão) e não expõe arquivos DICOM diretamente pelo Nginx.
+
+> AE Title sozinho não é autenticação forte. Esta primeira versão aceita um Calling AE Title configurado, mas não oferece TLS DICOM, VPN nem filtro de IP. Proteja a porta DICOM com firewall e planeje TLS/VPN antes de usar dados clínicos em produção.
+
+## Arquitetura
+
+```text
+Modalidade/PACS -- C-STORE :11112 --> dicom-receiver --> data/ + SQLite
+                                                    cleanup --> retenção/ZIPs antigos
+Navegador -- HTTPS --> Nginx do host --> 127.0.0.1:8787 --> web/FastAPI
+```
+
+Os três serviços (`web`, `dicom-receiver`, `cleanup`) usam a mesma imagem Python, mas são processos separados. SQLite opera em WAL, com `busy_timeout`, transações curtas e chaves estrangeiras. O web é publicado exclusivamente em `127.0.0.1:8787`; a porta DICOM é publicada em todas as interfaces.
+
+## Árvore
+
+```text
+app/                 FastAPI, SCP DICOM, SQLite, retenção e logging
+templates/ static/   Interface sem framework frontend
+config/              Templates Nginx isolados do MiniPACS
+tests/               Pytest e emissor de estudo sintético
+data/                DICOMs: StudyUID/SeriesUID/SOPUID.dcm (persistente)
+db/                  minipacs.sqlite3 (persistente)
+tmp/                 ZIPs transitórios (persistente, limpo após 24h)
+logs/                web.log, dicom.log, cleanup.log com rotação
+Dockerfile / docker-compose.yml
+install.sh update.sh manage.sh
+```
+
+`data`, `db`, `tmp` e `logs` são bind mounts: `docker compose down` não remove dados. As pastas de dados são ignoradas pelo Git e pelo contexto de build. O container usa UID/GID 10001, nunca root.
+
+## Teste local no Windows
+
+Requer Python 3.12+ e Docker Desktop para teste integrado. No PowerShell:
+
+```powershell
+py -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+$env:COOKIE_SECURE = "false"
+$env:ADMIN_USERNAME = "admin"
+$env:ADMIN_PASSWORD_HASH = ("defina um hash Argon2")
+$env:SESSION_SECRET = "uma-chave-aleatoria-longa"
+$env:ALLOWED_CALLING_AE = "TESTSCU"
+pytest -q
+python -m app.web
+```
+
+Para executar por Docker no Windows, copie `.env.example` para `.env`, preencha um hash Argon2 válido (gere com `python -m app.password_hash`, digitando a senha) **entre aspas simples**, defina `COOKIE_SECURE=false`, e execute `docker compose up --build`. O site fica em `http://127.0.0.1:8787` e o receptor em `localhost:11112`.
+
+Em outro terminal, com o ambiente Python ativo:
+
+```powershell
+python tests/send_test_study.py --host 127.0.0.1 --port 11112 --calling-ae TESTSCU --called-ae MINIPACS --images 3
+```
+
+O utilitário gera apenas pixels e identificadores fictícios. Ele faz C-ECHO e C-STORE, mostra os status e cria uma linha de estudo na interface.
+
+## Instalação Ubuntu/VPS
+
+1. Copie esta árvore para `/root/minipacs` (preservando arquivos ocultos, inclusive `.gitattributes`).
+2. Verifique que Docker, Docker Compose v2, Nginx e `curl` estão disponíveis. Para emissão automática, instale também `certbot` e garanta que DNS do domínio aponta para a VPS e as portas 80/443 chegam nela.
+3. Execute o único comando inicial:
+
+```bash
+cd /root/minipacs
+bash install.sh
+```
+
+O instalador exige root, cria os diretórios persistentes sob `/root/minipacs`, configura proprietários `10001:10001`, solicita domínio, AE Titles, porta e credenciais, gera Argon2 + `SESSION_SECRET`, constrói os serviços e valida `/health`. O `.env` é `root:root` e modo `0600`.
+
+Ele adiciona somente `/etc/nginx/sites-available/minipacs` e o respectivo symlink. Antes de cada reload, executa `nginx -t`; se o certificado ainda não existir, instala uma configuração HTTP temporária para ACME, sem referenciar certificados inexistentes. Depois que o DNS estiver funcional:
+
+```bash
+certbot certonly --webroot -w /var/www/html -d SEU_DOMINIO
+cd /root/minipacs && bash install.sh
+```
+
+O segundo comando troca a configuração isolada para HTTPS. O instalador não altera regras de UFW; quando UFW está ativo, ele apenas mostra a regra necessária para a porta DICOM.
+
+## Configuração do remetente
+
+Configure a modalidade/PACS assim (ajuste os valores escolhidos durante a instalação):
+
+```text
+IP/Host:         IP público ou hostname da VPS
+Port:            11112
+Called AE Title: MINIPACS
+Calling AE Title: valor de ALLOWED_CALLING_AE
+```
+
+Vários Calling AEs podem ser separados por vírgula. Um Calling AE diferente é rejeitado antes de receber imagens. O receptor também aceita C-ECHO. Verifique a porta no host com `ss -ltnp | grep 11112` e teste com `tests/send_test_study.py`.
+
+## Operação
+
+```bash
+./manage.sh status
+./manage.sh logs
+./manage.sh logs web
+./manage.sh logs dicom-receiver
+./manage.sh restart
+./manage.sh stop
+./manage.sh start
+./manage.sh health
+./manage.sh usage
+```
+
+A página consulta `/api/studies` a cada 30 segundos sem recarregar, mantém seleções quando possível e suporta busca, ZIP individual/em lote e exclusão confirmada. Cookies são HttpOnly, SameSite Strict e `Secure` quando `COOKIE_SECURE=true`; exclusões e operações em lote exigem token CSRF. Downloads passam pela aplicação autenticada e os ZIPs são criados em `tmp/`, nunca em `/tmp`.
+
+Para atualizar apenas o código substituído, sem tocar em `.env`, `data`, `db`, `logs` ou `tmp`:
+
+```bash
+./update.sh
+```
+
+Para alterar retenção, edite `RETENTION_DAYS` no `.env` e execute `docker compose up -d`; novos recebimentos recalculam `retention_until` a partir do último recebimento. Para trocar senha, gere um novo hash usando `docker compose run --rm --no-deps -T web python -m app.password_hash`, substitua apenas `ADMIN_PASSWORD_HASH` no `.env` e rode `docker compose up -d`. Faça backup com serviços parados ou snapshot consistente de `data/`, `db/` (incluindo WAL/SHM se presentes) e `.env` protegido.
+
+Logs também aparecem em `docker compose logs`; arquivos rotacionados ficam em `logs/`. Não faça upload de DICOM pelo navegador: esta versão só recebe C-STORE e não implementa DICOMweb, viewer, C-FIND/MOVE/GET, WebSocket ou SSE.

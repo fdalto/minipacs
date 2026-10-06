@@ -1,0 +1,59 @@
+services:
+  web:
+    build: .
+    image: minipacs:local
+    command: ["python", "-m", "app.web"]
+    env_file: .env
+    environment:
+      APP_ROOT: /opt/minipacs
+    ports:
+      - "127.0.0.1:8787:8000"
+    volumes:
+      - ./data:/opt/minipacs/data
+      - ./db:/opt/minipacs/db
+      - ./tmp:/opt/minipacs/tmp
+      - ./logs:/opt/minipacs/logs
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    security_opt:
+      - no-new-privileges:true
+
+  dicom-receiver:
+    image: minipacs:local
+    build: .
+    command: ["python", "-m", "app.dicom_receiver"]
+    env_file: .env
+    environment:
+      APP_ROOT: /opt/minipacs
+      # The configurable host port is published below; the container always listens on 11112.
+      DICOM_PORT: "11112"
+    ports:
+      - "${DICOM_BIND_ADDRESS:-0.0.0.0}:${DICOM_PORT:-11112}:11112"
+    volumes:
+      - ./data:/opt/minipacs/data
+      - ./db:/opt/minipacs/db
+      - ./logs:/opt/minipacs/logs
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+
+  cleanup:
+    image: minipacs:local
+    build: .
+    command: ["python", "-m", "app.cleanup"]
+    env_file: .env
+    environment:
+      APP_ROOT: /opt/minipacs
+    volumes:
+      - ./data:/opt/minipacs/data
+      - ./db:/opt/minipacs/db
+      - ./tmp:/opt/minipacs/tmp
+      - ./logs:/opt/minipacs/logs
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true

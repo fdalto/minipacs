@@ -1,0 +1,1 @@
+"""MiniPACS application package."""
