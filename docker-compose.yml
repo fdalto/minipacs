@@ -37,6 +37,7 @@ services:
     volumes:
       - ./data:/opt/minipacs/data
       - ./db:/opt/minipacs/db
+      - ./tmp:/opt/minipacs/tmp
       - ./logs:/opt/minipacs/logs
     restart: unless-stopped
     security_opt:

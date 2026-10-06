@@ -1,4 +1,5 @@
 .env
+dados.txt
 __pycache__/
 .pytest_cache/
 *.py[cod]
