@@ -22,16 +22,22 @@ services:
       start_period: 10s
     security_opt:
       - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
 
   dicom-receiver:
     image: minipacs:local
     build: .
     command: ["python", "-m", "app.dicom_receiver"]
-    env_file: .env
     environment:
       APP_ROOT: /opt/minipacs
       # The configurable host port is published below; the container always listens on 11112.
       DICOM_PORT: "11112"
+      DICOM_AE_TITLE: ${DICOM_AE_TITLE}
+      ALLOWED_CALLING_AE: ${ALLOWED_CALLING_AE}
+      RETENTION_DAYS: ${RETENTION_DAYS:-15}
+      MAX_DICOM_FILE_BYTES: ${MAX_DICOM_FILE_BYTES:-536870912}
     ports:
       - "${DICOM_BIND_ADDRESS:-0.0.0.0}:${DICOM_PORT:-11112}:11112"
     volumes:
@@ -42,14 +48,17 @@ services:
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
 
   cleanup:
     image: minipacs:local
     build: .
     command: ["python", "-m", "app.cleanup"]
-    env_file: .env
     environment:
       APP_ROOT: /opt/minipacs
+      RETENTION_DAYS: ${RETENTION_DAYS:-15}
     volumes:
       - ./data:/opt/minipacs/data
       - ./db:/opt/minipacs/db
@@ -58,3 +67,6 @@ services:
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true

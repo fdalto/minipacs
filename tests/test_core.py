@@ -6,7 +6,8 @@ from fastapi.testclient import TestClient
 
 from app.config import load_settings
 from app.db import connect, get_study, initialize, store_instance
-from app.dicom_receiver import extract_metadata
+from app.dicom_receiver import _safe_uid, extract_metadata
+from app.dicom_uid import validate_uid
 from app.web import app
 
 
@@ -45,11 +46,33 @@ def test_missing_dicom_tags_are_safe():
     assert values["patient_name"] == "" and values["study_instance_uid"] == ""
 
 
+def test_dicom_uid_rejects_path_components():
+    import pytest
+    for value in (".", "..", ".1", "1.", "1..2", "01.2", "1/2"):
+        with pytest.raises(ValueError):
+            _safe_uid(value)
+    assert _safe_uid("1.2.840.10008.1.2.1") == "1.2.840.10008.1.2.1"
+    assert validate_uid("2.25.123") == "2.25.123"
+
+
 def test_authentication_and_protected_endpoint():
     client = TestClient(app)
     assert client.get("/api/studies").status_code == 401
+    assert client.get("/", follow_redirects=False).status_code == 303
     assert client.post("/login", data={"username":"admin", "password":"wrong"}).status_code == 401
     assert client.post("/login", data={"username":"admin", "password":"correct horse battery staple"}, follow_redirects=False).status_code == 303
+    assert client.get("/", follow_redirects=False).status_code == 200
+
+
+def test_external_api_requires_bearer_token_and_limits_cors():
+    client = TestClient(app)
+    endpoint = "/api/v1/studies"
+    assert client.get(endpoint).status_code == 401
+    assert client.get(endpoint, headers={"Authorization": "Bearer wrong"}).status_code == 401
+    valid = client.get(endpoint, headers={"Authorization": "Bearer test-external-api-token", "Origin": "https://portal.example.test"})
+    assert valid.status_code == 200
+    assert valid.headers["access-control-allow-origin"] == "https://portal.example.test"
+    assert "access-control-allow-credentials" not in valid.headers
 
 
 def test_delete_requires_csrf_and_removes_study():

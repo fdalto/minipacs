@@ -1,26 +1,28 @@
 from __future__ import annotations
 
-import os
 import re
 import secrets
-import shutil
+import threading
+import time
 import zipfile
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Annotated
 
 from argon2 import PasswordHasher
-from argon2.exceptions import VerifyMismatchError
+from argon2.exceptions import InvalidHashError, VerifyMismatchError
 from fastapi import Depends, FastAPI, Form, HTTPException, Request, Response
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.background import BackgroundTask
+from starlette.middleware.cors import CORSMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 
 from .cleanup import delete_study
 from .config import load_settings
 from .db import audit, connect, get_instances, get_study, initialize, list_studies, summary
+from .dicom_uid import validate_uid
 from .logging_utils import configure_logging
 
 settings = load_settings()
@@ -30,8 +32,19 @@ logger = configure_logging("web", settings)
 
 app = FastAPI(title="MiniPACS", docs_url=None, redoc_url=None, openapi_url=None)
 app.add_middleware(SessionMiddleware, secret_key=settings.session_secret, https_only=settings.cookie_secure, same_site="strict")
+if settings.external_api_allowed_origins:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=list(settings.external_api_allowed_origins),
+        allow_credentials=False,
+        allow_methods=["GET"],
+        allow_headers=["Authorization", "Content-Type"],
+        max_age=600,
+    )
 app.mount("/static", StaticFiles(directory=settings.root / "static"), name="static")
 templates = Jinja2Templates(directory=settings.root / "templates")
+_api_requests: dict[str, list[float]] = {}
+_api_rate_lock = threading.Lock()
 
 
 def current_user(request: Request) -> str:
@@ -39,6 +52,34 @@ def current_user(request: Request) -> str:
     if not username:
         raise HTTPException(status_code=401, detail="authentication required")
     return str(username)
+
+
+def _api_rate_limit(request: Request) -> None:
+    client = request.client.host if request.client else "unknown"
+    cutoff = time.monotonic() - 60
+    with _api_rate_lock:
+        recent = [timestamp for timestamp in _api_requests.get(client, []) if timestamp > cutoff]
+        if len(recent) >= settings.external_api_rate_limit_per_minute:
+            raise HTTPException(status_code=429, detail="rate limit exceeded", headers={"Retry-After": "60"})
+        recent.append(time.monotonic())
+        _api_requests[client] = recent
+
+
+def external_api_principal(request: Request) -> str:
+    """Authenticate machine-to-machine requests; browser users must not hold this token."""
+    if not settings.external_api_token_hash:
+        raise HTTPException(status_code=404, detail="not found")
+    _api_rate_limit(request)
+    scheme, _, token = request.headers.get("Authorization", "").partition(" ")
+    if scheme.lower() != "bearer" or not token:
+        raise HTTPException(status_code=401, detail="invalid API credentials", headers={"WWW-Authenticate": "Bearer"})
+    try:
+        valid = PasswordHasher().verify(settings.external_api_token_hash, token)
+    except (VerifyMismatchError, InvalidHashError):
+        valid = False
+    if not valid:
+        raise HTTPException(status_code=401, detail="invalid API credentials", headers={"WWW-Authenticate": "Bearer"})
+    return f"api:{settings.external_api_token_name}"
 
 
 def csrf(request: Request) -> None:
@@ -74,7 +115,11 @@ def download_locks(studies: list[dict]):
     locks: list[Path] = []
     try:
         for study in studies:
-            lock = settings.data_dir / study["study_instance_uid"] / ".download.lock"
+            try:
+                study_uid = validate_uid(study["study_instance_uid"])
+            except ValueError:
+                raise HTTPException(409, "study has an invalid identifier")
+            lock = settings.data_dir / study_uid / ".download.lock"
             try:
                 lock.touch(exist_ok=False)
             except FileExistsError:
@@ -161,7 +206,10 @@ def logout(request: Request, username: Annotated[str, Depends(require_mutation)]
 
 
 @app.get("/", response_class=HTMLResponse)
-def index(request: Request, username: Annotated[str, Depends(current_user)]):
+def index(request: Request):
+    username = request.session.get("username")
+    if not username:
+        return RedirectResponse("/login", status_code=303)
     return templates.TemplateResponse(request, "index.html", {"username": username, "csrf_token": request.session["csrf"]})
 
 
@@ -183,8 +231,11 @@ def delete_one(study_uid: str, request: Request, username: Annotated[str, Depend
 def validate_uid_list(study_uids: object) -> list[str]:
     if not isinstance(study_uids, list) or not study_uids or len(study_uids) > settings.max_bulk_studies:
         raise HTTPException(400, "invalid number of studies")
-    values = [value for value in study_uids if isinstance(value, str) and 0 < len(value) <= 64]
-    if len(values) != len(study_uids) or len(set(values)) != len(values):
+    try:
+        values = [validate_uid(value) if isinstance(value, str) else "" for value in study_uids]
+    except ValueError:
+        values = []
+    if len(values) != len(study_uids) or not all(values) or len(set(values)) != len(values):
         raise HTTPException(400, "invalid study identifiers")
     return values
 
@@ -226,6 +277,51 @@ async def download_bulk(request: Request, username: Annotated[str, Depends(requi
         audit(conn, username, "BULK_DOWNLOAD", details=f"studies={len(studies_to_zip)}")
         conn.commit()
     return FileResponse(target, media_type="application/zip", filename="minipacs-studies.zip", background=BackgroundTask(remove_temp, target))
+
+
+def external_study(study: dict) -> dict[str, object]:
+    """Deliberately expose only fields needed by a portal; never leak paths or operational metadata."""
+    return {
+        "study_instance_uid": study["study_instance_uid"],
+        "patient_id": study["patient_id"],
+        "patient_name": study["patient_name"],
+        "study_date": study["study_date"],
+        "study_time": study["study_time"],
+        "accession_number": study["accession_number"],
+        "study_description": study["study_description"],
+        "modality": study["modality"],
+        "received_at": study["received_at"],
+        "last_received_at": study["last_received_at"],
+        "image_count": study["image_count"],
+        "total_size_bytes": study["total_size_bytes"],
+        "status": study["status"],
+    }
+
+
+@app.get("/api/v1/studies")
+def external_studies(request: Request, q: str = "", principal: Annotated[str, Depends(external_api_principal)] = ""):
+    studies = [external_study(study) for study in list_studies(settings.db_path, q[:200])]
+    return {"studies": studies, "summary": summary(settings.db_path)}
+
+
+@app.get("/api/v1/studies/{study_uid}")
+def external_study_detail(study_uid: str, principal: Annotated[str, Depends(external_api_principal)] = ""):
+    study = get_study(settings.db_path, study_uid)
+    if not study:
+        raise HTTPException(404, "study not found")
+    return external_study(study)
+
+
+@app.get("/api/v1/studies/{study_uid}/download")
+def external_download_study(study_uid: str, principal: Annotated[str, Depends(external_api_principal)] = ""):
+    study = get_study(settings.db_path, study_uid)
+    if not study:
+        raise HTTPException(404, "study not found")
+    target = create_zip([study], bulk=False)
+    with connect(settings.db_path) as conn:
+        audit(conn, principal, "API_DOWNLOAD", study_uid)
+        conn.commit()
+    return FileResponse(target, media_type="application/zip", filename=f"{safe_download_name(study)}.zip", background=BackgroundTask(remove_temp, target))
 
 
 def run() -> None:

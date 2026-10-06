@@ -11,3 +11,6 @@ os.environ["ADMIN_PASSWORD_HASH"] = PasswordHasher().hash("correct horse battery
 os.environ["SESSION_SECRET"] = "test-secret" * 4
 os.environ["COOKIE_SECURE"] = "false"
 os.environ["ALLOWED_CALLING_AE"] = "TESTSCU"
+os.environ["EXTERNAL_API_TOKEN_HASH"] = PasswordHasher().hash("test-external-api-token")
+os.environ["EXTERNAL_API_TOKEN_NAME"] = "test-portal"
+os.environ["EXTERNAL_API_ALLOWED_ORIGINS"] = "https://portal.example.test"

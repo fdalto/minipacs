@@ -109,6 +109,62 @@ Vários Calling AEs podem ser separados por vírgula. Um Calling AE diferente é
 
 A página consulta `/api/studies` a cada 30 segundos sem recarregar, mantém seleções quando possível e suporta busca, ZIP individual/em lote e exclusão confirmada. Cookies são HttpOnly, SameSite Strict e `Secure` quando `COOKIE_SECURE=true`; exclusões e operações em lote exigem token CSRF. Downloads passam pela aplicação autenticada e os ZIPs são criados em `tmp/`, nunca em `/tmp`.
 
+## API externa para portal próprio ou Lovable
+
+O MiniPACS mantém a interface administrativa atual e oferece uma API externa separada, inicialmente desabilitada. A API usa token Bearer com hash Argon2, não aceita exclusão e não compartilha a sessão administrativa do navegador.
+
+Gere uma credencial na VPS. Copie o token somente para o cofre de segredos do backend do seu portal; ele não deve ser colocado em JavaScript, variáveis públicas do Lovable ou código entregue ao navegador.
+
+```bash
+cd /root/minipacs
+docker compose run --rm --no-deps -T web python -m app.api_key
+```
+
+O comando exibe o token uma única vez e uma linha `EXTERNAL_API_TOKEN_HASH='...'`. Adicione essa linha ao `.env` junto com um nome para auditoria e a origem HTTPS exata do portal:
+
+```text
+EXTERNAL_API_TOKEN_NAME=lovable-backend
+EXTERNAL_API_ALLOWED_ORIGINS=https://app.seudominio.com
+EXTERNAL_API_RATE_LIMIT_PER_MINUTE=60
+```
+
+Depois recrie o serviço web:
+
+```bash
+docker compose up -d --force-recreate web
+```
+
+Os endpoints são publicados no mesmo domínio HTTPS do MiniPACS:
+
+```text
+GET /api/v1/studies?q=texto
+GET /api/v1/studies/{StudyInstanceUID}
+GET /api/v1/studies/{StudyInstanceUID}/download
+```
+
+Todas as chamadas exigem:
+
+```http
+Authorization: Bearer mpk_seu_token_secreto
+```
+
+Exemplo de teste a partir de um backend confiável:
+
+```bash
+curl -H "Authorization: Bearer $MINIPACS_API_TOKEN" \
+  https://SEU_DOMINIO/api/v1/studies
+```
+
+O CORS aceita apenas as origens declaradas em `EXTERNAL_API_ALLOWED_ORIGINS`, mas CORS não substitui autenticação. O portal deve autenticar seus próprios usuários, aplicar suas permissões e chamar a API a partir do seu backend. Vincule laudos a `StudyInstanceUID`; mantenha os arquivos DICOM na VPS.
+
+Para revogar uma integração, gere outro token, troque `EXTERNAL_API_TOKEN_HASH`, recrie `web` e remova o token antigo do portal. Cada download externo fica registrado no audit como `API_DOWNLOAD`.
+
+## Endurecimento da implantação
+
+O receptor valida UIDs DICOM antes de criar caminhos no disco, exige Called AE Title compatível com `DICOM_AE_TITLE`, limita associações simultâneas e aplica `MAX_DICOM_FILE_BYTES` por instância. O limite padrão é 512 MiB; ajuste-o somente se a modalidade precisar de arquivos maiores.
+
+Os containers `dicom-receiver` e `cleanup` não recebem mais a senha administrativa, o segredo de sessão ou o token da API. O Docker pode publicar portas antes das regras convencionais do UFW; para limitar a porta DICOM por IP, use o firewall do provedor ou regras na cadeia `DOCKER-USER`, conforme a [documentação do Docker](https://docs.docker.com/engine/network/packet-filtering-firewalls/). Para dados clínicos em produção, mantenha `8042` permitido somente para os IPs conhecidos das modalidades e planeje DICOM TLS ou VPN.
+
 Para atualizar apenas o código substituído, sem tocar em `.env`, `data`, `db`, `logs` ou `tmp`:
 
 ```bash

@@ -11,6 +11,7 @@ from pynetdicom.presentation import VerificationPresentationContexts
 
 from .config import Settings, load_settings
 from .db import initialize, store_instance
+from .dicom_uid import validate_uid
 from .logging_utils import configure_logging
 
 
@@ -31,10 +32,8 @@ def extract_metadata(dataset: Dataset, source_ae: str) -> dict[str, str]:
 
 
 def _safe_uid(value: str) -> str:
-    # DICOM UIDs have digits and dots only. Rejecting all else also prevents path traversal.
-    if not value or len(value) > 64 or any(c not in "0123456789." for c in value):
-        raise ValueError("invalid required DICOM UID")
-    return value
+    """Validate a DICOM UID before it is ever used as a filesystem component."""
+    return validate_uid(value)
 
 
 def build_handlers(settings: Settings):
@@ -66,6 +65,8 @@ def build_handlers(settings: Settings):
             try:
                 dataset.save_as(temporary, write_like_original=True)
                 file_size = temporary.stat().st_size
+                if file_size > settings.max_dicom_file_bytes:
+                    raise ValueError("DICOM instance exceeds configured size limit")
                 relative = target.relative_to(settings.data_dir).as_posix()
                 try:
                     # link() is exclusive: a concurrently received duplicate can never overwrite an existing file.
@@ -107,6 +108,11 @@ def run() -> None:
         logger.error("ALLOWED_CALLING_AE is empty; refusing to start an unauthenticated DICOM receiver")
         sys.exit(2)
     ae = AE(ae_title=settings.dicom_ae_title)
+    ae.require_called_aet = True
+    ae.maximum_associations = 10
+    ae.acse_timeout = 30
+    ae.dimse_timeout = 120
+    ae.network_timeout = 30
     for context in AllStoragePresentationContexts:
         ae.add_supported_context(context.abstract_syntax, context.transfer_syntax)
     for context in VerificationPresentationContexts:

@@ -7,11 +7,17 @@ from pathlib import Path
 
 from .config import load_settings
 from .db import expired_studies, finalize_delete, initialize, mark_for_deletion, mark_ready, restore_deletion
+from .dicom_uid import validate_uid
 from .logging_utils import configure_logging
 
 
 def delete_study(settings, study: dict, username: str, action: str, logger) -> bool:
     uid = study["study_instance_uid"]
+    try:
+        validate_uid(uid)
+    except ValueError:
+        logger.error("Refused deletion for an invalid study UID")
+        return False
     # Never race a receiver that has written an instance in the previous minute.
     try:
         last_received = datetime.fromisoformat(study["last_received_at"])
