@@ -158,12 +158,14 @@
     if(downloading)return;
     setDownloadState(true,'Compactando arquivos para o Weasis…');
     try{
+      await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
       const response=await fetch(`/api/studies/${encodeURIComponent(studyUid)}/weasis-link`,{method:'POST',headers:{'X-CSRF-Token':csrf}});
       if(!response.ok)throw Error();
       const link=await response.json();
       const command=`$dicom:get -z "${link.download_url}"`;
+      downloadProgressMessage.textContent='ZIP pronto. Abrindo o Weasis para baixar…';
+      await new Promise(resolve=>setTimeout(resolve,200));
       window.location.assign(`weasis://?${encodeURIComponent(command)}`);
-      downloadProgressMessage.textContent='Abrindo o Weasis…';
       setTimeout(()=>setDownloadState(false),1200);
     }catch{
       setDownloadState(false);

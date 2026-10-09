@@ -181,7 +181,7 @@ POST /api/studies/{StudyInstanceUID}/weasis-link
 GET  /weasis/studies/{StudyInstanceUID}/download?token=...
 ```
 
-O primeiro exige sessão administrativa e CSRF; o segundo aceita apenas a assinatura temporária correspondente ao estudo, transmite `application/zip` com `Cache-Control: no-store` e entra na mesma fila de compactação dos downloads usuais. Ambos os eventos são registrados no audit como `WEASIS_LINK` e `WEASIS_DOWNLOAD`.
+O primeiro exige sessão administrativa e CSRF, entra na fila de compactação e só responde quando o ZIP estiver pronto. O segundo aceita apenas a assinatura temporária correspondente ao estudo e transmite esse ZIP com `Cache-Control: no-store`. O arquivo fica disponível para novas tentativas durante os 60 segundos de validade do link. Ambos os eventos são registrados no audit como `WEASIS_LINK` e `WEASIS_DOWNLOAD`.
 
 O computador precisa ter Weasis instalado e associado ao protocolo `weasis://`. Alguns navegadores pedem confirmação antes de abrir um aplicativo externo; isso é esperado.
 

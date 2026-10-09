@@ -280,8 +280,12 @@ def create_weasis_link(study_uid: str, request: Request, username: Annotated[str
     study = get_study(settings.db_path, study_uid)
     if not study:
         raise HTTPException(404, "study not found")
-    token = weasis_link_serializer.dumps({"study_uid": study_uid, "username": username})
+    target = create_zip([study], bulk=False)
+    token = weasis_link_serializer.dumps({"study_uid": study_uid, "username": username, "zip_name": target.name})
     download_url = str(request.url_for("weasis_download", study_uid=study_uid).include_query_params(token=token))
+    cleanup_timer = threading.Timer(WEASIS_LINK_TTL_SECONDS, remove_temp, args=(target,))
+    cleanup_timer.daemon = True
+    cleanup_timer.start()
     with connect(settings.db_path) as conn:
         audit(conn, username, "WEASIS_LINK", study_uid)
         conn.commit()
@@ -296,21 +300,28 @@ def weasis_download(study_uid: str, token: str):
         raise HTTPException(401, "Weasis download link has expired") from exc
     except BadSignature as exc:
         raise HTTPException(401, "invalid Weasis download link") from exc
-    if not isinstance(payload, dict) or payload.get("study_uid") != study_uid or not isinstance(payload.get("username"), str):
+    zip_name = payload.get("zip_name") if isinstance(payload, dict) else None
+    if (
+        not isinstance(payload, dict)
+        or payload.get("study_uid") != study_uid
+        or not isinstance(payload.get("username"), str)
+        or not isinstance(zip_name, str)
+        or Path(zip_name).name != zip_name
+        or not zip_name.startswith("download-")
+        or not zip_name.endswith(".zip")
+    ):
         raise HTTPException(403, "Weasis download link does not match this study")
-    study = get_study(settings.db_path, study_uid)
-    if not study:
-        raise HTTPException(404, "study not found")
-    target = create_zip([study], bulk=False)
+    target = settings.tmp_dir / zip_name
+    if not target.is_file():
+        raise HTTPException(410, "Weasis download link is no longer available")
     with connect(settings.db_path) as conn:
         audit(conn, payload["username"][:100], "WEASIS_DOWNLOAD", study_uid)
         conn.commit()
     return FileResponse(
         target,
         media_type="application/zip",
-        filename=f"{safe_download_name(study)}.zip",
+        filename="study.zip",
         headers={"Cache-Control": "no-store"},
-        background=BackgroundTask(remove_temp, target),
     )
 
 
