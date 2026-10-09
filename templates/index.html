@@ -23,6 +23,14 @@
   </section>
   <section class="table-wrap"><table><thead><tr><th></th><th>Nome</th><th>Data</th><th>Descrição</th><th>Destino AE</th><th>Imagens</th><th>Recebido</th><th>Ações</th></tr></thead><tbody id="studies"><tr><td colspan="8">Carregando estudos…</td></tr></tbody></table></section>
 </main>
+<div id="bulk-download-queue" class="queue-overlay" role="dialog" aria-modal="true" aria-labelledby="queue-title" hidden>
+  <section class="queue-panel">
+    <div class="queue-heading"><div><h2 id="queue-title">Preparando downloads</h2><p id="queue-message">Os estudos serão compactados um por vez.</p></div><span id="queue-count" class="queue-count">0 de 0</span></div>
+    <div class="queue-progress" aria-hidden="true"><span id="queue-progress-bar"></span></div>
+    <ol id="queue-list" class="queue-list" aria-label="Estudos selecionados"></ol>
+    <div class="queue-actions"><button id="queue-cancel" class="secondary" type="button">Cancelar após o atual</button></div>
+  </section>
+</div>
 <div id="download-progress" class="download-progress" role="status" aria-live="polite" aria-hidden="true"><span class="spinner" aria-hidden="true"></span><span>Compactando arquivos…</span></div>
 <dialog id="confirm"><form method="dialog"><h2>Confirmar exclusão</h2><p id="confirm-text"></p><div><button value="cancel" class="secondary">Cancelar</button><button id="confirm-delete" value="confirm" class="danger">Excluir</button></div></form></dialog>
 <script src="/static/app.js"></script>
