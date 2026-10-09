@@ -80,6 +80,15 @@
 
   function studyFilename(studyUid){return `minipacs-study-${String(studyUid).replace(/[^0-9.]/g,'')||'download'}.zip`}
 
+  function responseFilename(response,fallback){
+    const disposition=response.headers.get('Content-Disposition')||'';
+    const extended=disposition.match(/filename\*=UTF-8''([^;]+)/i);
+    const plain=disposition.match(/filename="?([^";]+)"?/i);
+    let filename=extended?decodeURIComponent(extended[1]):plain?plain[1]:fallback;
+    filename=filename.replace(/[\\/:*?"<>|\u0000-\u001f]/g,'_').trim();
+    return filename||fallback;
+  }
+
   async function saveInDirectory(directoryHandle,blob,filename){
     const fileHandle=await directoryHandle.getFileHandle(filename,{create:true});
     const writable=await fileHandle.createWritable();
@@ -99,7 +108,7 @@
     const response=await fetch(`/download/study/${encodeURIComponent(studyUid)}`);
     if(!response.ok)throw Error();
     const blob=await response.blob();
-    const filename=studyFilename(studyUid);
+    const filename=responseFilename(response,studyFilename(studyUid));
     if(directoryHandle)await saveInDirectory(directoryHandle,blob,filename);
     else saveDownload(blob,filename);
   }
