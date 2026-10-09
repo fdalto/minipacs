@@ -1,4 +1,6 @@
 <!doctype html>
-<html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Entrar — MiniPACS</title><link rel="stylesheet" href="/static/site.css"></head>
-<body class="login-page"><main class="login-card"><h1>MiniPACS</h1><p>Área administrativa</p>{% if error %}<div class="error">{{ error }}</div>{% endif %}
-<form method="post" action="/login" autocomplete="on"><label>Usuário<input name="username" required autocomplete="username"></label><label>Senha<input type="password" name="password" required autocomplete="current-password"></label><button>Entrar</button></form></main></body></html>
+<html lang="pt-BR">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Entrar — MiniPACS</title><link rel="stylesheet" href="/static/site.css"></head>
+<body class="login-page"><main class="login-card"><div class="login-brand"><span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><ellipse cx="12" cy="5.5" rx="6.5" ry="2.5"/><path d="M5.5 5.5v6c0 1.4 2.9 2.5 6.5 2.5s6.5-1.1 6.5-2.5v-6M5.5 11.5v6C5.5 18.9 8.4 20 12 20s6.5-1.1 6.5-2.5v-6"/></svg></span><div><h1>MiniPACS</h1><p>Área administrativa</p></div></div>{% if error %}<div class="error">{{ error }}</div>{% endif %}
+<form method="post" action="/login" autocomplete="on"><label>Usuário<input name="username" required autocomplete="username"></label><label>Senha<input type="password" name="password" required autocomplete="current-password"></label><button>Entrar</button></form></main></body>
+</html>

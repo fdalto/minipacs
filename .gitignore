@@ -1,6 +1,7 @@
 .env
 dados.txt
 tests/.runtime/
+tests/.preview-runtime/
 __pycache__/
 .pytest_cache/
 *.py[cod]
