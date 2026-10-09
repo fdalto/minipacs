@@ -2,6 +2,7 @@
   const csrf = document.body.dataset.csrf;
   const tbody = document.querySelector('#studies');
   const search = document.querySelector('#search');
+  const receiptFilter = document.querySelector('#receipt-filter');
   const selectAll = document.querySelector('#select-all');
   const bulkDownload = document.querySelector('#bulk-download');
   const bulkDelete = document.querySelector('#bulk-delete');
@@ -15,6 +16,7 @@
   const queueProgressBar = document.querySelector('#queue-progress-bar');
   const queueCancel = document.querySelector('#queue-cancel');
   let items = [];
+  let allStudies = [];
   let downloading = false;
   let queueCancelRequested = false;
 
@@ -22,6 +24,31 @@
   const selected = () => [...document.querySelectorAll('.study-check:checked')].map(x => x.value);
   const bytes = n => { const u=['B','KB','MB','GB','TB']; let i=0; while(n>=1024&&i<u.length-1){n/=1024;i++} return `${n.toFixed(i?1:0)} ${u[i]}` };
   const date = value => value ? new Date(value).toLocaleString('pt-BR') : '—';
+
+  function receiptGroup(study){
+    if(!study.last_received_at)return null;
+    const parts=Object.fromEntries(new Intl.DateTimeFormat('en-CA',{timeZone:'America/Sao_Paulo',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',hourCycle:'h23'}).formatToParts(new Date(study.last_received_at)).filter(part=>part.type!=='literal').map(part=>[part.type,part.value]));
+    const hour=Number(parts.hour);
+    const shift=hour>=5&&hour<12?'manhã':hour>=12&&hour<18?'tarde':'noite';
+    const key=`${parts.year}-${parts.month}-${parts.day}|${shift}`;
+    return {key,label:`${parts.day}/${parts.month}/${parts.year} ${shift}`,date:`${parts.year}-${parts.month}-${parts.day}`,shift};
+  }
+
+  function populateReceiptFilter(){
+    const previous=receiptFilter.value;
+    const groups=new Map();
+    allStudies.forEach(study=>{const group=receiptGroup(study);if(group)groups.set(group.key,group)});
+    const shiftOrder={noite:0,tarde:1,'manhã':2};
+    const ordered=[...groups.values()].sort((a,b)=>b.date.localeCompare(a.date)||shiftOrder[a.shift]-shiftOrder[b.shift]);
+    receiptFilter.innerHTML='<option value="">Todos os recebimentos</option>';
+    ordered.forEach(group=>{const option=document.createElement('option');option.value=group.key;option.textContent=group.label;receiptFilter.append(option)});
+    receiptFilter.value=groups.has(previous)?previous:'';
+  }
+
+  function searchMatches(study,query){
+    if(!query)return true;
+    return [study.patient_name,study.patient_id,study.study_description,study.accession_number,study.study_date,study.destination_ae].some(value=>String(value||'').toLocaleLowerCase('pt-BR').includes(query));
+  }
 
   function updateButtons(){
     const count=selected().length;
@@ -33,19 +60,25 @@
     selectAll.indeterminate=count>0&&count<items.length;
   }
 
-  function render(data){
+  function render(studies){
     const keep=new Set(selected());
-    items=data.studies;
-    document.querySelector('#count-studies').textContent=data.summary.studies;
-    document.querySelector('#count-images').textContent=data.summary.images;
-    document.querySelector('#count-bytes').textContent=bytes(data.summary.bytes);
+    items=studies;
+    document.querySelector('#count-studies').textContent=studies.length;
+    document.querySelector('#count-images').textContent=studies.reduce((total,study)=>total+Number(study.image_count||0),0);
+    document.querySelector('#count-bytes').textContent=bytes(studies.reduce((total,study)=>total+Number(study.total_size_bytes||0),0));
     if(!items.length){tbody.innerHTML='<tr><td colspan="8" class="muted">Nenhum estudo encontrado.</td></tr>';updateButtons();return}
     tbody.innerHTML=items.map(s=>`<tr><td><input class="study-check" type="checkbox" value="${escape(s.study_instance_uid)}" ${keep.has(s.study_instance_uid)?'checked':''}></td><td><span class="patient-name">${escape(s.patient_name)||'—'}</span><small class="patient-id">${escape(s.patient_id)}</small></td><td>${escape(s.study_date)||'—'}</td><td>${escape(s.study_description)||'—'}</td><td>${escape(s.destination_ae)||'—'}</td><td>${s.image_count}</td><td>${date(s.last_received_at)}</td><td class="actions"><button class="download-one" data-uid="${escape(s.study_instance_uid)}" ${downloading?'disabled':''}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v11m0 0 4-4m-4 4-4-4M5 20h14"/></svg>Baixar</button><button class="danger delete-one" data-uid="${escape(s.study_instance_uid)}" ${downloading?'disabled':''}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M10 11v5m4-5v5M9 7l1-3h4l1 3m-9 0 1 13h10l1-13"/></svg>Excluir</button></td></tr>`).join('');
     updateButtons();
   }
 
+  function applyFilters(){
+    const query=search.value.trim().toLocaleLowerCase('pt-BR');
+    const receipt=receiptFilter.value;
+    render(allStudies.filter(study=>searchMatches(study,query)&&(!receipt||receiptGroup(study)?.key===receipt)));
+  }
+
   async function load(){
-    try{const r=await fetch(`/api/studies?q=${encodeURIComponent(search.value)}`);if(r.status===401){location='/login';return}if(!r.ok)throw Error();render(await r.json())}
+    try{const r=await fetch('/api/studies');if(r.status===401){location='/login';return}if(!r.ok)throw Error();const data=await r.json();allStudies=data.studies;populateReceiptFilter();applyFilters()}
     catch{tbody.innerHTML='<tr><td colspan="8" class="error">Não foi possível carregar os estudos.</td></tr>'}
   }
 
@@ -174,7 +207,8 @@
   }
 
   let timer;
-  search.addEventListener('input',()=>{clearTimeout(timer);timer=setTimeout(load,250)});
+  search.addEventListener('input',()=>{clearTimeout(timer);timer=setTimeout(applyFilters,250)});
+  receiptFilter.addEventListener('change',applyFilters);
   selectAll.addEventListener('change',()=>{document.querySelectorAll('.study-check').forEach(x=>x.checked=selectAll.checked);updateButtons()});
   tbody.addEventListener('change',updateButtons);
   tbody.addEventListener('click',e=>{
