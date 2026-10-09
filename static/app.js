@@ -78,10 +78,30 @@
     setTimeout(()=>URL.revokeObjectURL(url),1000);
   }
 
-  async function requestDownload(studyUid){
+  function studyFilename(studyUid){return `minipacs-study-${String(studyUid).replace(/[^0-9.]/g,'')||'download'}.zip`}
+
+  async function saveInDirectory(directoryHandle,blob,filename){
+    const fileHandle=await directoryHandle.getFileHandle(filename,{create:true});
+    const writable=await fileHandle.createWritable();
+    await writable.write(blob);
+    await writable.close();
+  }
+
+  async function requestDownloadDirectory(){
+    if(!window.isSecureContext||!('showDirectoryPicker' in window))throw new Error('Salvar vários arquivos em uma pasta requer Chrome ou Edge acessado por HTTPS.');
+    const directoryHandle=await window.showDirectoryPicker({mode:'readwrite'});
+    const permission=await directoryHandle.requestPermission({mode:'readwrite'});
+    if(permission!=='granted')throw new Error('A permissão para gravar na pasta não foi concedida.');
+    return directoryHandle;
+  }
+
+  async function requestDownload(studyUid,directoryHandle=null){
     const response=await fetch(`/download/study/${encodeURIComponent(studyUid)}`);
     if(!response.ok)throw Error();
-    saveDownload(await response.blob(),'minipacs-study.zip');
+    const blob=await response.blob();
+    const filename=studyFilename(studyUid);
+    if(directoryHandle)await saveInDirectory(directoryHandle,blob,filename);
+    else saveDownload(blob,filename);
   }
 
   async function downloadOne(studyUid){
@@ -116,13 +136,16 @@
     const chosen=new Set(selected());
     const studies=items.filter(study=>chosen.has(study.study_instance_uid));
     if(!studies.length)return;
+    let directoryHandle;
+    try{directoryHandle=await requestDownloadDirectory()}
+    catch(error){if(error.name!=='AbortError')alert(error.message||'Não foi possível obter permissão para salvar os arquivos.');return}
     setDownloadState(true);
     showQueue(studies);
     let completed=0;
     for(let index=0;index<studies.length;index++){
       updateQueueItem(index,'active');
       queueMessage.textContent=`Compactando ${index+1} de ${studies.length}…`;
-      try{await requestDownload(studies[index].study_instance_uid);updateQueueItem(index,'done')}
+      try{await requestDownload(studies[index].study_instance_uid,directoryHandle);updateQueueItem(index,'done')}
       catch{updateQueueItem(index,'error')}
       completed++;
       updateQueueProgress(completed,studies.length);
