@@ -18,6 +18,7 @@ from fastapi.templating import Jinja2Templates
 from starlette.background import BackgroundTask
 from starlette.middleware.cors import CORSMiddleware
 from starlette.middleware.sessions import SessionMiddleware
+from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 
 from .cleanup import delete_study
 from .config import load_settings
@@ -31,6 +32,8 @@ settings.ensure_directories()
 initialize(settings.db_path)
 logger = configure_logging("web", settings)
 zip_build_queue = ZipBuildQueue(settings.max_concurrent_zip_builds)
+weasis_link_serializer = URLSafeTimedSerializer(settings.session_secret, salt="minipacs-weasis-download")
+WEASIS_LINK_TTL_SECONDS = 60
 
 app = FastAPI(title="MiniPACS", docs_url=None, redoc_url=None, openapi_url=None)
 app.add_middleware(SessionMiddleware, secret_key=settings.session_secret, https_only=settings.cookie_secure, same_site="strict")
@@ -270,6 +273,45 @@ def download_study(study_uid: str, username: Annotated[str, Depends(current_user
         audit(conn, username, "DOWNLOAD", study_uid)
         conn.commit()
     return FileResponse(target, media_type="application/zip", filename=f"{safe_download_name(study)}.zip", background=BackgroundTask(remove_temp, target))
+
+
+@app.post("/api/studies/{study_uid}/weasis-link")
+def create_weasis_link(study_uid: str, request: Request, username: Annotated[str, Depends(require_mutation)]):
+    study = get_study(settings.db_path, study_uid)
+    if not study:
+        raise HTTPException(404, "study not found")
+    token = weasis_link_serializer.dumps({"study_uid": study_uid, "username": username})
+    download_url = str(request.url_for("weasis_download", study_uid=study_uid).include_query_params(token=token))
+    with connect(settings.db_path) as conn:
+        audit(conn, username, "WEASIS_LINK", study_uid)
+        conn.commit()
+    return {"download_url": download_url, "expires_in": WEASIS_LINK_TTL_SECONDS}
+
+
+@app.get("/weasis/studies/{study_uid}/download", name="weasis_download")
+def weasis_download(study_uid: str, token: str):
+    try:
+        payload = weasis_link_serializer.loads(token, max_age=WEASIS_LINK_TTL_SECONDS)
+    except SignatureExpired as exc:
+        raise HTTPException(401, "Weasis download link has expired") from exc
+    except BadSignature as exc:
+        raise HTTPException(401, "invalid Weasis download link") from exc
+    if not isinstance(payload, dict) or payload.get("study_uid") != study_uid or not isinstance(payload.get("username"), str):
+        raise HTTPException(403, "Weasis download link does not match this study")
+    study = get_study(settings.db_path, study_uid)
+    if not study:
+        raise HTTPException(404, "study not found")
+    target = create_zip([study], bulk=False)
+    with connect(settings.db_path) as conn:
+        audit(conn, payload["username"][:100], "WEASIS_DOWNLOAD", study_uid)
+        conn.commit()
+    return FileResponse(
+        target,
+        media_type="application/zip",
+        filename=f"{safe_download_name(study)}.zip",
+        headers={"Cache-Control": "no-store"},
+        background=BackgroundTask(remove_temp, target),
+    )
 
 
 @app.post("/download/bulk")

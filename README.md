@@ -170,6 +170,21 @@ O CORS aceita apenas as origens declaradas em `EXTERNAL_API_ALLOWED_ORIGINS`, ma
 
 Para revogar uma integração, gere outro token, troque `EXTERNAL_API_TOKEN_HASH`, recrie `web` e remova o token antigo do portal. Cada download externo fica registrado no audit como `API_DOWNLOAD`.
 
+## Abrir no Weasis
+
+Na interface administrativa, o botão verde do Weasis cria uma URL assinada, válida por 60 segundos, e chama o protocolo local `weasis://` com `$dicom:get -z`. O Weasis instalado no computador baixa o ZIP diretamente da VPS, usando essa URL; ele não recebe o cookie da sessão do navegador nem o token da API externa.
+
+O fluxo usa dois endpoints internos:
+
+```text
+POST /api/studies/{StudyInstanceUID}/weasis-link
+GET  /weasis/studies/{StudyInstanceUID}/download?token=...
+```
+
+O primeiro exige sessão administrativa e CSRF; o segundo aceita apenas a assinatura temporária correspondente ao estudo, transmite `application/zip` com `Cache-Control: no-store` e entra na mesma fila de compactação dos downloads usuais. Ambos os eventos são registrados no audit como `WEASIS_LINK` e `WEASIS_DOWNLOAD`.
+
+O computador precisa ter Weasis instalado e associado ao protocolo `weasis://`. Alguns navegadores pedem confirmação antes de abrir um aplicativo externo; isso é esperado.
+
 ## Endurecimento da implantação
 
 O receptor valida UIDs DICOM antes de criar caminhos no disco, exige Called AE Title compatível com `DICOM_AE_TITLE`, limita associações simultâneas e aplica `MAX_DICOM_FILE_BYTES` por instância. O limite padrão é 512 MiB; ajuste-o somente se a modalidade precisar de arquivos maiores.

@@ -118,3 +118,25 @@ def test_delete_requires_csrf_and_removes_study():
     assert client.delete(f"/api/studies/{uid}", headers={"X-CSRF-Token": token}).status_code == 200
     assert get_study(settings.db_path, uid) is None
     assert not (settings.data_dir / uid).exists()
+
+
+def test_weasis_link_streams_zip_without_browser_session():
+    settings = load_settings(); initialize(settings.db_path)
+    uid="1.2.840.2"; sop="1.2.840.2.1"; series="1.2.840.2.0"
+    directory=settings.data_dir / uid / series; directory.mkdir(parents=True, exist_ok=True)
+    target=directory / f"{sop}.dcm"; target.write_bytes(b"DICOM")
+    store_instance(settings.db_path, metadata(uid, series, sop), target.relative_to(settings.data_dir).as_posix(), 5, 15)
+    client=TestClient(app)
+    assert client.post(f"/api/studies/{uid}/weasis-link").status_code == 401
+    client.post("/login", data={"username":"admin", "password":"correct horse battery staple"})
+    csrf = re.search(r'data-csrf="([^"]+)"', client.get("/").text).group(1)
+    response=client.post(f"/api/studies/{uid}/weasis-link", headers={"X-CSRF-Token": csrf})
+    assert response.status_code == 200
+    link=response.json()
+    assert link["expires_in"] == 60
+    weasis_client=TestClient(app)
+    download=weasis_client.get(link["download_url"])
+    assert download.status_code == 200
+    assert download.headers["cache-control"] == "no-store"
+    assert download.content[:2] == b"PK"
+    assert client.get(f"/weasis/studies/{uid}/download?token=invalid").status_code == 401

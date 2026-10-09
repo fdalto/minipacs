@@ -9,6 +9,7 @@
   const dialog = document.querySelector('#confirm');
   const confirmText = document.querySelector('#confirm-text');
   const downloadProgress = document.querySelector('#download-progress');
+  const downloadProgressMessage = document.querySelector('#download-progress-message');
   const queueOverlay = document.querySelector('#bulk-download-queue');
   const queueList = document.querySelector('#queue-list');
   const queueMessage = document.querySelector('#queue-message');
@@ -54,7 +55,7 @@
     const count=selected().length;
     bulkDownload.disabled=downloading||!count;
     bulkDelete.disabled=downloading||!count;
-    document.querySelectorAll('.download-one,.delete-one,.study-check').forEach(control=>control.disabled=downloading);
+    document.querySelectorAll('.weasis-one,.download-one,.delete-one,.study-check').forEach(control=>control.disabled=downloading);
     selectAll.disabled=downloading;
     selectAll.checked=items.length>0&&count===items.length;
     selectAll.indeterminate=count>0&&count<items.length;
@@ -67,7 +68,7 @@
     document.querySelector('#count-images').textContent=studies.reduce((total,study)=>total+Number(study.image_count||0),0);
     document.querySelector('#count-bytes').textContent=bytes(studies.reduce((total,study)=>total+Number(study.total_size_bytes||0),0));
     if(!items.length){tbody.innerHTML='<tr><td colspan="8" class="muted">Nenhum estudo encontrado.</td></tr>';updateButtons();return}
-    tbody.innerHTML=items.map(s=>`<tr><td><input class="study-check" type="checkbox" value="${escape(s.study_instance_uid)}" ${keep.has(s.study_instance_uid)?'checked':''}></td><td><span class="patient-name">${escape(s.patient_name)||'—'}</span><small class="patient-id">${escape(s.patient_id)}</small></td><td>${escape(s.study_date)||'—'}</td><td>${escape(s.study_description)||'—'}</td><td>${escape(s.destination_ae)||'—'}</td><td>${s.image_count}</td><td>${date(s.last_received_at)}</td><td class="actions"><button class="download-one" data-uid="${escape(s.study_instance_uid)}" ${downloading?'disabled':''}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v11m0 0 4-4m-4 4-4-4M5 20h14"/></svg>Baixar</button><button class="danger delete-one" data-uid="${escape(s.study_instance_uid)}" ${downloading?'disabled':''}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M10 11v5m4-5v5M9 7l1-3h4l1 3m-9 0 1 13h10l1-13"/></svg>Excluir</button></td></tr>`).join('');
+    tbody.innerHTML=items.map(s=>`<tr><td><input class="study-check" type="checkbox" value="${escape(s.study_instance_uid)}" ${keep.has(s.study_instance_uid)?'checked':''}></td><td><span class="patient-name">${escape(s.patient_name)||'—'}</span><small class="patient-id">${escape(s.patient_id)}</small></td><td>${escape(s.study_date)||'—'}</td><td>${escape(s.study_description)||'—'}</td><td>${escape(s.destination_ae)||'—'}</td><td>${s.image_count}</td><td>${date(s.last_received_at)}</td><td class="actions"><button class="weasis-one" data-uid="${escape(s.study_instance_uid)}" title="Abrir no Weasis" aria-label="Abrir no Weasis" ${downloading?'disabled':''}><img src="/static/weasis.svg" alt=""></button><button class="download-one" data-uid="${escape(s.study_instance_uid)}" ${downloading?'disabled':''}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v11m0 0 4-4m-4 4-4-4M5 20h14"/></svg>Baixar</button><button class="danger delete-one" data-uid="${escape(s.study_instance_uid)}" ${downloading?'disabled':''}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M10 11v5m4-5v5M9 7l1-3h4l1 3m-9 0 1 13h10l1-13"/></svg>Excluir</button></td></tr>`).join('');
     updateButtons();
   }
 
@@ -97,8 +98,9 @@
     await load();
   }
 
-  function setDownloadState(active){
+  function setDownloadState(active,message='Compactando arquivos…'){
     downloading=active;
+    downloadProgressMessage.textContent=message;
     downloadProgress.classList.toggle('is-visible',active);
     downloadProgress.setAttribute('aria-hidden',String(!active));
     updateButtons();
@@ -150,6 +152,23 @@
     if(downloading)return;
     setDownloadState(true);
     try{await requestDownload(studyUid)}catch{alert('Não foi possível preparar o download. Tente novamente.')}finally{setDownloadState(false)}
+  }
+
+  async function openWeasis(studyUid){
+    if(downloading)return;
+    setDownloadState(true,'Compactando arquivos para o Weasis…');
+    try{
+      const response=await fetch(`/api/studies/${encodeURIComponent(studyUid)}/weasis-link`,{method:'POST',headers:{'X-CSRF-Token':csrf}});
+      if(!response.ok)throw Error();
+      const link=await response.json();
+      const command=`$dicom:get -z "${link.download_url}"`;
+      window.location.assign(`weasis://?${encodeURIComponent(command)}`);
+      downloadProgressMessage.textContent='Abrindo o Weasis…';
+      setTimeout(()=>setDownloadState(false),1200);
+    }catch{
+      setDownloadState(false);
+      alert('Não foi possível preparar o estudo para o Weasis. Tente novamente.');
+    }
   }
 
   function showQueue(studies){
@@ -212,8 +231,10 @@
   selectAll.addEventListener('change',()=>{document.querySelectorAll('.study-check').forEach(x=>x.checked=selectAll.checked);updateButtons()});
   tbody.addEventListener('change',updateButtons);
   tbody.addEventListener('click',e=>{
+    const weasisButton=e.target.closest('button.weasis-one');
     const deleteButton=e.target.closest('button.delete-one');
     const downloadButton=e.target.closest('button.download-one');
+    if(weasisButton&&!weasisButton.disabled)openWeasis(weasisButton.dataset.uid);
     if(deleteButton&&!deleteButton.disabled)deletion([deleteButton.dataset.uid]);
     if(downloadButton&&!downloadButton.disabled)downloadOne(downloadButton.dataset.uid);
   });

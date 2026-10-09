@@ -1,6 +1,6 @@
 <!doctype html>
 <html lang="pt-BR">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>MiniPACS</title><link rel="stylesheet" href="/static/site.css"><link rel="stylesheet" href="/static/receipt-filter.css"></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>MiniPACS</title><link rel="stylesheet" href="/static/site.css"><link rel="stylesheet" href="/static/receipt-filter.css"><link rel="stylesheet" href="/static/weasis-button.css"></head>
 <body data-csrf="{{ csrf_token }}">
 <header class="site-header">
   <div class="header-inner">
@@ -32,7 +32,7 @@
     <div class="queue-actions"><button id="queue-cancel" class="secondary" type="button">Cancelar após o atual</button></div>
   </section>
 </div>
-<div id="download-progress" class="download-progress" role="status" aria-live="polite" aria-hidden="true"><span class="spinner" aria-hidden="true"></span><span>Compactando arquivos…</span></div>
+<div id="download-progress" class="download-progress" role="status" aria-live="polite" aria-hidden="true"><span class="spinner" aria-hidden="true"></span><span id="download-progress-message">Compactando arquivos…</span></div>
 <dialog id="confirm"><form method="dialog"><h2>Confirmar exclusão</h2><p id="confirm-text"></p><div><button value="cancel" class="secondary">Cancelar</button><button id="confirm-delete" value="confirm" class="danger">Excluir</button></div></form></dialog>
 <script src="/static/app.js"></script>
 </body>
