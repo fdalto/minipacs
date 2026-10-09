@@ -29,6 +29,8 @@ class Settings:
     max_bulk_studies: int
     max_bulk_bytes: int
     max_dicom_file_bytes: int
+    max_concurrent_zip_builds: int
+    zip_queue_timeout_seconds: int
     external_api_token_hash: str
     external_api_token_name: str
     external_api_allowed_origins: tuple[str, ...]
@@ -73,6 +75,8 @@ def load_settings() -> Settings:
         max_bulk_studies=max(1, int(os.getenv("MAX_BULK_STUDIES", "20"))),
         max_bulk_bytes=max(1, int(os.getenv("MAX_BULK_BYTES", str(20 * 1024**3)))),
         max_dicom_file_bytes=max(1, int(os.getenv("MAX_DICOM_FILE_BYTES", str(512 * 1024**2)))),
+        max_concurrent_zip_builds=max(1, int(os.getenv("MAX_CONCURRENT_ZIP_BUILDS", "1"))),
+        zip_queue_timeout_seconds=max(1, int(os.getenv("ZIP_QUEUE_TIMEOUT_SECONDS", "3300"))),
         external_api_token_hash=os.getenv("EXTERNAL_API_TOKEN_HASH", "").strip(),
         external_api_token_name=os.getenv("EXTERNAL_API_TOKEN_NAME", "external-api").strip()[:100] or "external-api",
         external_api_allowed_origins=tuple(

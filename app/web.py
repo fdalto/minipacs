@@ -24,11 +24,13 @@ from .config import load_settings
 from .db import audit, connect, get_instances, get_study, initialize, list_studies, summary
 from .dicom_uid import validate_uid
 from .logging_utils import configure_logging
+from .zip_queue import ZipBuildQueue, ZipQueueTimeout
 
 settings = load_settings()
 settings.ensure_directories()
 initialize(settings.db_path)
 logger = configure_logging("web", settings)
+zip_build_queue = ZipBuildQueue(settings.max_concurrent_zip_builds)
 
 app = FastAPI(title="MiniPACS", docs_url=None, redoc_url=None, openapi_url=None)
 app.add_middleware(SessionMiddleware, secret_key=settings.session_secret, https_only=settings.cookie_secure, same_site="strict")
@@ -136,19 +138,27 @@ def create_zip(studies: list[dict], bulk: bool) -> Path:
     target = settings.tmp_dir / f"download-{token}.zip"
     used: set[str] = set()
     try:
-        with download_locks(studies), zipfile.ZipFile(target, "w", compression=zipfile.ZIP_DEFLATED, allowZip64=True) as archive:
-            for study in studies:
-                base = safe_download_name(study) if bulk else study["study_instance_uid"]
-                if bulk:
-                    original = base
-                    sequence = 2
-                    while base in used:
-                        base = f"{original}_{sequence}"
-                        sequence += 1
-                    used.add(base)
-                for instance, file_path in study_files(study["study_instance_uid"]):
-                    archive_name = f"{base}/{instance['series_instance_uid']}/{instance['sop_instance_uid']}.dcm"
-                    archive.write(file_path, archive_name)
+        with zip_build_queue.slot(settings.zip_queue_timeout_seconds):
+            with download_locks(studies), zipfile.ZipFile(target, "w", compression=zipfile.ZIP_DEFLATED, allowZip64=True) as archive:
+                for study in studies:
+                    base = safe_download_name(study) if bulk else study["study_instance_uid"]
+                    if bulk:
+                        original = base
+                        sequence = 2
+                        while base in used:
+                            base = f"{original}_{sequence}"
+                            sequence += 1
+                        used.add(base)
+                    for instance, file_path in study_files(study["study_instance_uid"]):
+                        archive_name = f"{base}/{instance['series_instance_uid']}/{instance['sop_instance_uid']}.dcm"
+                        archive.write(file_path, archive_name)
+    except ZipQueueTimeout as exc:
+        target.unlink(missing_ok=True)
+        raise HTTPException(
+            status_code=503,
+            detail="ZIP generation queue is busy; try again shortly",
+            headers={"Retry-After": "60"},
+        ) from exc
     except Exception:
         target.unlink(missing_ok=True)
         raise

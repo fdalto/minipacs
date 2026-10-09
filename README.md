@@ -176,6 +176,8 @@ O receptor valida UIDs DICOM antes de criar caminhos no disco, exige Called AE T
 
 Os containers `dicom-receiver` e `cleanup` não recebem mais a senha administrativa, o segredo de sessão ou o token da API. O Docker pode publicar portas antes das regras convencionais do UFW; para limitar a porta DICOM por IP, use o firewall do provedor ou regras na cadeia `DOCKER-USER`, conforme a [documentação do Docker](https://docs.docker.com/engine/network/packet-filtering-firewalls/). Para dados clínicos em produção, mantenha `8042` permitido somente para os IPs conhecidos das modalidades e planeje DICOM TLS ou VPN.
 
+As compactações ZIP entram em uma fila FIFO única no `web`: por padrão, uma compactação é executada por vez, evitando picos de CPU e arquivos incompletos quando há vários downloads. `MAX_CONCURRENT_ZIP_BUILDS=1` é apropriado para uma VPS pequena. Uma requisição aguarda até `ZIP_QUEUE_TIMEOUT_SECONDS=3300` (55 minutos); se exceder esse período, recebe `503` com `Retry-After: 60`. A fila é interna ao único processo `web` da implantação atual e não exige banco de dados.
+
 Para atualizar apenas o código substituído, sem tocar em `.env`, `data`, `db`, `logs` ou `tmp`:
 
 ```bash
