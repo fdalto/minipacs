@@ -255,6 +255,44 @@ for desejado abrir Weasis a partir do novo portal, será necessário projetar um
 endpoint específico que crie uma URL temporária sem expor o Bearer token ao
 navegador. Não reutilize URL de download da API externa no protocolo `weasis://`.
 
+### Especificação curta do botão “Abrir no Weasis” para o portal
+
+Exiba o botão somente em estudos com `status: "ready"`. Ao clique, o frontend
+chama a própria rota autenticada do portal, por exemplo:
+
+```text
+POST /api/portal/studies/{studyInstanceUid}/weasis-link
+```
+
+Essa Edge Function deve validar a sessão do usuário e sua permissão para o
+`destination_ae`, depois solicitar ao MiniPACS uma URL assinada, de uso curto
+(60 segundos), limitada àquele `StudyInstanceUID`. A resposta ao frontend deve
+conter somente a URL temporária, por exemplo:
+
+```json
+{ "download_url": "https://minipacs.../weasis/studies/.../download?token=...", "expires_in": 60 }
+```
+
+Ainda dentro do gesto direto de clique do usuário — para evitar bloqueio do
+navegador ao abrir aplicativo externo — o frontend monta e chama:
+
+```ts
+const command = `$dicom:get -z "${downloadUrl}"`;
+window.location.assign(`weasis://?${encodeURIComponent(command)}`);
+```
+
+Mostre “Abrindo o Weasis…” enquanto a URL é solicitada. Se o MiniPACS retornar
+`409`, informe que o estudo ainda está sendo preparado; se retornar `401`,
+`403` ou `404`, mostre uma mensagem neutra e registre o detalhe somente no
+backend do portal. O token Bearer do MiniPACS nunca pode chegar ao navegador,
+nem ser usado dentro da URL `weasis://`.
+
+**Situação atual:** a API externa ainda não oferece essa rota de emissão de
+link. O endpoint existente `POST /api/studies/{uid}/weasis-link` é exclusivo
+da interface administrativa, porque exige sessão e CSRF. Portanto, o botão no
+portal Lovable só deve ser desenvolvido depois de adicionarmos a rota externa
+específica acima no MiniPACS.
+
 ## Alterações em relação ao arquivo v1.0
 
 1. Documentado o ciclo de estados `receiving`, `packing`, `ready` e `deleting` retornado pela API.
@@ -262,3 +300,4 @@ navegador. Não reutilize URL de download da API externa no protocolo `weasis://
 3. O ZIP é persistente, servido somente para estudos `ready`, e os endpoints de download podem retornar `409` enquanto o estudo é preparado ou `503` se o arquivo estiver temporariamente indisponível.
 4. Incluídas orientações de interface, polling moderado e mensagem em português para estudos em preparação.
 5. Esclarecido que o fluxo de URL assinada/Weasis existente pertence à interface administrativa e não integra, por enquanto, a API externa destinada ao Lovable.
+6. Adicionada uma especificação curta para o futuro botão “Abrir no Weasis” do portal, incluindo o requisito de endpoint externo dedicado.
