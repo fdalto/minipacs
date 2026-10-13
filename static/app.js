@@ -142,7 +142,7 @@
 
   async function requestDownload(studyUid,directoryHandle=null){
     const response=await fetch(`/download/study/${encodeURIComponent(studyUid)}`);
-    if(!response.ok)throw Error();
+    if(!response.ok){const error=Error();error.status=response.status;throw error}
     const blob=await response.blob();
     const filename=responseFilename(response,studyFilename(studyUid));
     if(directoryHandle)await saveInDirectory(directoryHandle,blob,filename);
@@ -152,7 +152,11 @@
   async function downloadOne(studyUid){
     if(downloading)return;
     setDownloadState(true);
-    try{await requestDownload(studyUid)}catch{alert('Não foi possível preparar o download. Tente novamente.')}finally{setDownloadState(false)}
+    try{await requestDownload(studyUid)}catch(error){
+      alert(error.status===409
+        ?'O estudo ainda está recebendo imagens e sendo preparado para download compactado. Aguarde finalização do processo. Pode demorar de 2 a 3 minutos.'
+        :'Não foi possível preparar o download. Tente novamente.');
+    }finally{setDownloadState(false)}
   }
 
   async function openWeasis(studyUid){
