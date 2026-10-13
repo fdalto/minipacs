@@ -1,5 +1,7 @@
 # Instruções de integração — Portal Lovable + MiniPACS
 
+**Versão deste documento: 1.1 — 13/10/2026.** Esta versão substitui a v1.0.
+
 Leia este documento antes de implementar. O MiniPACS já recebe arquivos DICOM na VPS e é a fonte de verdade para estudos e arquivos. Este portal deve ser uma interface de usuários, permissões, laudos e experiência de uso; **não deve receber nem armazenar DICOM diretamente**.
 
 ## Objetivo
@@ -56,6 +58,10 @@ O serviço só deve ser usado por HTTPS. Não usar a porta DICOM `8042` nesta in
 
 ## Contrato da API MiniPACS
 
+Todos os endpoints abaixo pertencem à API externa e exigem o Bearer token no
+servidor/Edge Function do portal. Eles não usam o cookie da interface
+administrativa do MiniPACS.
+
 ### Listar estudos
 
 ```http
@@ -94,6 +100,26 @@ Retorno:
 }
 ```
 
+### Ciclo de vida e disponibilidade do ZIP
+
+O campo `status` faz parte do contrato e deve ser tratado pelo portal:
+
+| Status | Significado | Ação no portal |
+|---|---|---|
+| `receiving` | O receptor ainda recebe imagens, ou aguarda 90 segundos sem imagens novas antes de iniciar a compactação. | Exibir “Recebendo imagens”; não habilitar download. |
+| `packing` | O worker está criando o ZIP persistente. | Exibir “Compactando ZIP”; não habilitar download. |
+| `ready` | O ZIP foi criado com sucesso e está pronto para servir. | Habilitar download. |
+| `deleting` | O estudo está sendo removido e normalmente não é listado. | Não exibir como disponível. |
+
+O MiniPACS compacta **um estudo por vez**, consulta a fila a cada 30 segundos
+e só inicia a compactação depois de 90 segundos sem novo DICOM. Portanto, o
+portal não deve tentar obter o ZIP durante `receiving` ou `packing`, nem fazer
+polling agressivo. Uma atualização a cada 30 segundos é suficiente.
+
+Mensagem recomendada para um download ainda indisponível:
+
+> O estudo ainda está recebendo imagens e sendo preparado para download compactado. Aguarde finalização do processo. Pode demorar de 2 a 3 minutos.
+
 ### Detalhar estudo
 
 ```http
@@ -108,7 +134,13 @@ Antes de devolver o resultado, o backend deve confirmar que `destination_ae` do 
 GET /api/v1/studies/{study_instance_uid}/download
 ```
 
-O backend deve validar a permissão e o `destination_ae` antes de buscar esse endpoint. Faça streaming da resposta para o usuário autenticado, preservando `Content-Type` e propondo um nome de arquivo seguro. Nunca redirecione o navegador para a URL do MiniPACS com o token como query string.
+O endpoint serve o ZIP persistente já pronto; ele **não cria ZIP sob demanda**.
+O backend deve validar a permissão e o `destination_ae` antes de buscá-lo.
+Faça streaming da resposta para o usuário autenticado, preservando
+`Content-Type: application/zip` e `Content-Disposition`, que já contém um nome
+seguro baseado no paciente/estudo. A resposta usa `Cache-Control: no-store`.
+Nunca redirecione o navegador para a URL do MiniPACS com o token como query
+string.
 
 ### Respostas de erro
 
@@ -116,7 +148,9 @@ O backend deve validar a permissão e o `destination_ae` antes de buscar esse en
 |---|---|---|
 | 401 | token ausente/inválido | registrar erro técnico sem vazar token; mostrar erro genérico |
 | 404 | API não habilitada ou estudo inexistente | mostrar “não encontrado” |
+| 409 | estudo em `receiving` ou `packing`; ZIP ainda não disponível | manter download desabilitado, atualizar a lista e mostrar a mensagem de preparação |
 | 429 | limite de requisições | avisar e permitir nova tentativa após alguns segundos |
+| 503 | o arquivo ZIP pronto está temporariamente indisponível | aguardar 30 segundos antes de oferecer nova tentativa |
 | 5xx | falha temporária da VPS | mostrar estado de indisponibilidade; não inventar dados |
 
 ## Autenticação e autorização do portal
@@ -153,7 +187,11 @@ POST /api/portal/reports
 GET  /api/portal/reports?study_instance_uid=...
 ```
 
-As três primeiras são proxies seguros para a VPS. Os laudos pertencem ao banco do portal e devem referenciar `study_instance_uid`; eles não devem alterar os arquivos na VPS.
+As três primeiras são proxies seguros para a VPS. O endpoint de download só deve
+ser chamado quando o estudo estiver `ready`; ao receber `409`, ele deve devolver
+um estado de preparação ao frontend, sem repetir chamadas em paralelo. Os laudos
+pertencem ao banco do portal e devem referenciar `study_instance_uid`; eles não
+devem alterar os arquivos na VPS.
 
 Pseudocódigo para listagem no servidor:
 
@@ -181,6 +219,7 @@ return response.json();
 - Página “Exames” com busca por paciente, ID, descrição, accession e data.
 - Organização e filtro da lista exibida por data ou AETITLE (Felipe e Vitor) e outros parametros.
 - Tabela com paciente, data, modalidade, descrição, quantidade de imagens, recebido em e status.
+- Botão de download somente para status `ready`; para `receiving` e `packing`, apresentar o estado e a mensagem de preparação acima.
 - Exibir o destino somente para administradores; para usuário comum ele é implícito à sua associação.
 - Estados claros para carregamento, nenhum resultado, erro e API temporariamente indisponível.
 - Datas em formato brasileiro e tamanhos de arquivo legíveis.
@@ -202,3 +241,24 @@ return response.json();
 - Compartilhar credenciais de administrador do MiniPACS.
 - Permitir exclusão de estudos pelo portal.
 - Viewer DICOM clínico no browser.
+
+## Weasis
+
+O MiniPACS administrativo possui um fluxo próprio para Weasis: ele cria uma
+URL assinada de uso temporário (60 segundos) e aciona `weasis://` com
+`$dicom:get -z`. Esse fluxo usa sessão administrativa e CSRF; **não é um
+endpoint da API externa `/api/v1`** e não deve ser chamado pelo navegador do
+portal Lovable.
+
+Para esta integração, mantenha o download via proxy autenticado do portal. Se
+for desejado abrir Weasis a partir do novo portal, será necessário projetar um
+endpoint específico que crie uma URL temporária sem expor o Bearer token ao
+navegador. Não reutilize URL de download da API externa no protocolo `weasis://`.
+
+## Alterações em relação ao arquivo v1.0
+
+1. Documentado o ciclo de estados `receiving`, `packing`, `ready` e `deleting` retornado pela API.
+2. O ZIP agora é pré-gerado pelo worker do MiniPACS após 90 segundos sem novas imagens; o download não dispara mais compactação sob demanda.
+3. O ZIP é persistente, servido somente para estudos `ready`, e os endpoints de download podem retornar `409` enquanto o estudo é preparado ou `503` se o arquivo estiver temporariamente indisponível.
+4. Incluídas orientações de interface, polling moderado e mensagem em português para estudos em preparação.
+5. Esclarecido que o fluxo de URL assinada/Weasis existente pertence à interface administrativa e não integra, por enquanto, a API externa destinada ao Lovable.
