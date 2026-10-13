@@ -8,11 +8,12 @@ MiniPACS é um receptor DICOM C-STORE temporário e uma interface web administra
 
 ```text
 Modalidade/PACS -- C-STORE :11112 --> dicom-receiver --> data/ + SQLite
-                                                    cleanup --> retenção/ZIPs antigos
+                                                    zip-worker --> archives/*.zip
+                                                    cleanup --> retenção
 Navegador -- HTTPS --> Nginx do host --> 127.0.0.1:8787 --> web/FastAPI
 ```
 
-Os três serviços (`web`, `dicom-receiver`, `cleanup`) usam a mesma imagem Python, mas são processos separados. SQLite opera em WAL, com `busy_timeout`, transações curtas e chaves estrangeiras. O web é publicado exclusivamente em `127.0.0.1:8787`; a porta DICOM é publicada em todas as interfaces.
+Os quatro serviços (`web`, `dicom-receiver`, `zip-worker`, `cleanup`) usam a mesma imagem Python, mas são processos separados. SQLite opera em WAL, com `busy_timeout`, transações curtas e chaves estrangeiras. O web é publicado exclusivamente em `127.0.0.1:8787`; a porta DICOM é publicada em todas as interfaces.
 
 ## Árvore
 
@@ -22,6 +23,7 @@ templates/ static/   Interface sem framework frontend
 config/              Templates Nginx isolados do MiniPACS
 tests/               Pytest e emissor de estudo sintético
 data/                DICOMs: StudyUID/SeriesUID/SOPUID.dcm (persistente)
+archives/            ZIP pronto por estudo (persistente e derivado dos DICOMs)
 db/                  minipacs.sqlite3 (persistente)
 tmp/                 ZIPs transitórios (persistente, limpo após 24h)
 logs/                web.log, dicom.log, cleanup.log com rotação
@@ -29,7 +31,7 @@ Dockerfile / docker-compose.yml
 install.sh update.sh manage.sh
 ```
 
-`data`, `db`, `tmp` e `logs` são bind mounts: `docker compose down` não remove dados. As pastas de dados são ignoradas pelo Git e pelo contexto de build. O container usa UID/GID 10001, nunca root.
+`data`, `archives`, `db`, `tmp` e `logs` são bind mounts: `docker compose down` não remove dados. As pastas de dados são ignoradas pelo Git e pelo contexto de build. O container usa UID/GID 10001, nunca root.
 
 ## Teste local no Windows
 
@@ -118,7 +120,7 @@ Cadastre no PACS de origem dois destinos com o mesmo host e porta, mudando apena
 ./manage.sh usage
 ```
 
-A página consulta `/api/studies` a cada 30 segundos sem recarregar, mantém seleções quando possível e suporta busca, ZIP individual/em lote e exclusão confirmada. Cookies são HttpOnly, SameSite Strict e `Secure` quando `COOKIE_SECURE=true`; exclusões e operações em lote exigem token CSRF. Downloads passam pela aplicação autenticada e os ZIPs são criados em `tmp/`, nunca em `/tmp`.
+A página consulta `/api/studies` a cada 30 segundos sem recarregar, mantém seleções quando possível e mostra os estados `receiving`, `packing`, `ready` e `deleting`. Cookies são HttpOnly, SameSite Strict e `Secure` quando `COOKIE_SECURE=true`; exclusões e operações em lote exigem token CSRF. Downloads e Weasis só servem o ZIP persistente de estudos `ready`.
 
 ## API externa para portal próprio ou Lovable
 
@@ -181,7 +183,7 @@ POST /api/studies/{StudyInstanceUID}/weasis-link
 GET  /weasis/studies/{StudyInstanceUID}/download?token=...
 ```
 
-O primeiro exige sessão administrativa e CSRF, entra na fila de compactação e só responde quando o ZIP estiver pronto. O segundo aceita apenas a assinatura temporária correspondente ao estudo e transmite esse ZIP com `Cache-Control: no-store`. O arquivo fica disponível para novas tentativas durante os 60 segundos de validade do link. Ambos os eventos são registrados no audit como `WEASIS_LINK` e `WEASIS_DOWNLOAD`.
+O primeiro exige sessão administrativa e CSRF e só cria o link se o estudo já estiver `ready`. O segundo aceita apenas a assinatura temporária correspondente ao estudo e transmite o ZIP pré-gerado com `Cache-Control: no-store`. Ambos os eventos são registrados no audit como `WEASIS_LINK` e `WEASIS_DOWNLOAD`.
 
 O computador precisa ter Weasis instalado e associado ao protocolo `weasis://`. Alguns navegadores pedem confirmação antes de abrir um aplicativo externo; isso é esperado.
 
@@ -191,7 +193,7 @@ O receptor valida UIDs DICOM antes de criar caminhos no disco, exige Called AE T
 
 Os containers `dicom-receiver` e `cleanup` não recebem mais a senha administrativa, o segredo de sessão ou o token da API. O Docker pode publicar portas antes das regras convencionais do UFW; para limitar a porta DICOM por IP, use o firewall do provedor ou regras na cadeia `DOCKER-USER`, conforme a [documentação do Docker](https://docs.docker.com/engine/network/packet-filtering-firewalls/). Para dados clínicos em produção, mantenha `8042` permitido somente para os IPs conhecidos das modalidades e planeje DICOM TLS ou VPN.
 
-As compactações ZIP entram em uma fila FIFO única no `web`: por padrão, uma compactação é executada por vez, evitando picos de CPU e arquivos incompletos quando há vários downloads. `MAX_CONCURRENT_ZIP_BUILDS=1` é apropriado para uma VPS pequena. Uma requisição aguarda até `ZIP_QUEUE_TIMEOUT_SECONDS=3300` (55 minutos); se exceder esse período, recebe `503` com `Retry-After: 60`. A fila é interna ao único processo `web` da implantação atual e não exige banco de dados.
+O `zip-worker` consulta a fila persistida a cada 30 segundos e compacta um estudo por vez depois de 90 segundos sem novas imagens. Ele grava primeiro um arquivo parcial, publica o ZIP final de forma atômica e usa lease/heartbeat no SQLite; se travar, seu watchdog encerra o processo para o Docker reiniciá-lo, e um lease antigo é recuperado. Ajuste `ZIP_STABILITY_SECONDS`, `ZIP_WORKER_INTERVAL_SECONDS` e `ZIP_PACKING_LEASE_SECONDS` no `.env` se necessário.
 
 Para atualizar apenas o código substituído, sem tocar em `.env`, `data`, `db`, `logs` ou `tmp`:
 

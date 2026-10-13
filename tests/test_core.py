@@ -1,5 +1,6 @@
 from datetime import timedelta
 import re
+import zipfile
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -126,6 +127,11 @@ def test_weasis_link_streams_zip_without_browser_session():
     directory=settings.data_dir / uid / series; directory.mkdir(parents=True, exist_ok=True)
     target=directory / f"{sop}.dcm"; target.write_bytes(b"DICOM")
     store_instance(settings.db_path, metadata(uid, series, sop), target.relative_to(settings.data_dir).as_posix(), 5, 15)
+    archive=settings.archive_dir / f"{uid}.zip"
+    with zipfile.ZipFile(archive, "w") as packaged:
+        packaged.write(target, f"{uid}/{series}/{sop}.dcm")
+    with connect(settings.db_path) as conn:
+        conn.execute("UPDATE studies SET status='ready', archive_path=?, archive_size_bytes=? WHERE study_instance_uid=?", (archive.name, archive.stat().st_size, uid))
     client=TestClient(app)
     assert client.post(f"/api/studies/{uid}/weasis-link").status_code == 401
     client.post("/login", data={"username":"admin", "password":"correct horse battery staple"})

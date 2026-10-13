@@ -6,7 +6,7 @@ from datetime import datetime, UTC
 from pathlib import Path
 
 from .config import load_settings
-from .db import expired_studies, finalize_delete, initialize, mark_for_deletion, mark_ready, restore_deletion
+from .db import expired_studies, finalize_delete, initialize, mark_for_deletion, restore_deletion
 from .dicom_uid import validate_uid
 from .logging_utils import configure_logging
 
@@ -26,9 +26,6 @@ def delete_study(settings, study: dict, username: str, action: str, logger) -> b
             return False
     except (KeyError, ValueError):
         return False
-    if (settings.data_dir / uid / ".download.lock").exists():
-        logger.info("Postponed deletion of study being downloaded %s", uid)
-        return False
     marked = mark_for_deletion(settings.db_path, [uid])
     if not marked:
         return False
@@ -36,6 +33,8 @@ def delete_study(settings, study: dict, username: str, action: str, logger) -> b
         directory = settings.data_dir / uid
         if directory.exists():
             shutil.rmtree(directory)
+        (settings.archive_dir / f"{uid}.zip").unlink(missing_ok=True)
+        (settings.archive_dir / f".{uid}.zip.part").unlink(missing_ok=True)
         finalize_delete(settings.db_path, uid, username, action)
         logger.info("Removed study %s (%s)", uid, action)
         return True
@@ -57,7 +56,6 @@ def remove_abandoned_zips(settings, logger) -> None:
 
 
 def run_once(settings, logger) -> None:
-    mark_ready(settings.db_path)
     for study in expired_studies(settings.db_path):
         delete_study(settings, study, "system", "AUTO_DELETE", logger)
     remove_abandoned_zips(settings, logger)

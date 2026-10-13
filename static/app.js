@@ -25,6 +25,7 @@
   const selected = () => [...document.querySelectorAll('.study-check:checked')].map(x => x.value);
   const bytes = n => { const u=['B','KB','MB','GB','TB']; let i=0; while(n>=1024&&i<u.length-1){n/=1024;i++} return `${n.toFixed(i?1:0)} ${u[i]}` };
   const date = value => value ? new Date(value).toLocaleString('pt-BR') : '—';
+  const statusLabel = status => ({receiving:'Recebendo imagens',packing:'Compactando ZIP',ready:'Pronto',deleting:'Excluindo'}[status]||status);
 
   function receiptGroup(study){
     if(!study.last_received_at)return null;
@@ -67,8 +68,8 @@
     document.querySelector('#count-studies').textContent=studies.length;
     document.querySelector('#count-images').textContent=studies.reduce((total,study)=>total+Number(study.image_count||0),0);
     document.querySelector('#count-bytes').textContent=bytes(studies.reduce((total,study)=>total+Number(study.total_size_bytes||0),0));
-    if(!items.length){tbody.innerHTML='<tr><td colspan="8" class="muted">Nenhum estudo encontrado.</td></tr>';updateButtons();return}
-    tbody.innerHTML=items.map(s=>`<tr><td><input class="study-check" type="checkbox" value="${escape(s.study_instance_uid)}" ${keep.has(s.study_instance_uid)?'checked':''}></td><td><span class="patient-name">${escape(s.patient_name)||'—'}</span><small class="patient-id">${escape(s.patient_id)}</small></td><td>${escape(s.study_date)||'—'}</td><td>${escape(s.study_description)||'—'}</td><td>${escape(s.destination_ae)||'—'}</td><td>${s.image_count}</td><td>${date(s.last_received_at)}</td><td class="actions"><button class="weasis-one" data-uid="${escape(s.study_instance_uid)}" title="Abrir no Weasis" aria-label="Abrir no Weasis" ${downloading?'disabled':''}><img src="/static/weasis.svg" alt=""></button><button class="download-one" data-uid="${escape(s.study_instance_uid)}" ${downloading?'disabled':''}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v11m0 0 4-4m-4 4-4-4M5 20h14"/></svg>Baixar</button><button class="danger delete-one" data-uid="${escape(s.study_instance_uid)}" ${downloading?'disabled':''}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M10 11v5m4-5v5M9 7l1-3h4l1 3m-9 0 1 13h10l1-13"/></svg>Excluir</button></td></tr>`).join('');
+    if(!items.length){tbody.innerHTML='<tr><td colspan="9" class="muted">Nenhum estudo encontrado.</td></tr>';updateButtons();return}
+    tbody.innerHTML=items.map(s=>{const ready=s.status==='ready';const disabled=downloading||!ready?'disabled':'';return `<tr><td><input class="study-check" type="checkbox" value="${escape(s.study_instance_uid)}" ${keep.has(s.study_instance_uid)?'checked':''}></td><td><span class="patient-name">${escape(s.patient_name)||'—'}</span><small class="patient-id">${escape(s.patient_id)}</small></td><td>${escape(s.study_date)||'—'}</td><td>${escape(s.study_description)||'—'}</td><td>${escape(s.destination_ae)||'—'}</td><td>${s.image_count}</td><td>${date(s.last_received_at)}</td><td><span class="study-status ${escape(s.status)}">${escape(statusLabel(s.status))}</span></td><td class="actions"><button class="weasis-one" data-uid="${escape(s.study_instance_uid)}" title="Abrir no Weasis" aria-label="Abrir no Weasis" ${disabled}><img src="/static/weasis.svg" alt=""></button><button class="download-one" data-uid="${escape(s.study_instance_uid)}" ${disabled}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v11m0 0 4-4m-4 4-4-4M5 20h14"/></svg>Baixar</button><button class="danger delete-one" data-uid="${escape(s.study_instance_uid)}" ${downloading?'disabled':''}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M10 11v5m4-5v5M9 7l1-3h4l1 3m-9 0 1 13h10l1-13"/></svg>Excluir</button></td></tr>`}).join('');
     updateButtons();
   }
 
@@ -80,7 +81,7 @@
 
   async function load(){
     try{const r=await fetch('/api/studies');if(r.status===401){location='/login';return}if(!r.ok)throw Error();const data=await r.json();allStudies=data.studies;populateReceiptFilter();applyFilters()}
-    catch{tbody.innerHTML='<tr><td colspan="8" class="error">Não foi possível carregar os estudos.</td></tr>'}
+    catch{tbody.innerHTML='<tr><td colspan="9" class="error">Não foi possível carregar os estudos.</td></tr>'}
   }
 
   async function deletion(uids){
@@ -98,7 +99,7 @@
     await load();
   }
 
-  function setDownloadState(active,message='Compactando arquivos…'){
+  function setDownloadState(active,message='Baixando arquivos…'){
     downloading=active;
     downloadProgressMessage.textContent=message;
     downloadProgress.classList.toggle('is-visible',active);
@@ -156,14 +157,14 @@
 
   async function openWeasis(studyUid){
     if(downloading)return;
-    setDownloadState(true,'Compactando arquivos para o Weasis…');
+    setDownloadState(true,'Preparando abertura no Weasis…');
     try{
       await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
       const response=await fetch(`/api/studies/${encodeURIComponent(studyUid)}/weasis-link`,{method:'POST',headers:{'X-CSRF-Token':csrf}});
       if(!response.ok)throw Error();
       const link=await response.json();
       const command=`$dicom:get -z "${link.download_url}"`;
-      downloadProgressMessage.textContent='ZIP pronto. Abrindo o Weasis para baixar…';
+      downloadProgressMessage.textContent='Abrindo o Weasis…';
       await new Promise(resolve=>setTimeout(resolve,200));
       window.location.assign(`weasis://?${encodeURIComponent(command)}`);
       setTimeout(()=>setDownloadState(false),1200);
@@ -197,8 +198,8 @@
   async function downloadSelectedQueue(){
     if(downloading)return;
     const chosen=new Set(selected());
-    const studies=items.filter(study=>chosen.has(study.study_instance_uid));
-    if(!studies.length)return;
+    const studies=items.filter(study=>chosen.has(study.study_instance_uid)&&study.status==='ready');
+    if(!studies.length){alert('Selecione ao menos um estudo com status Pronto.');return;}
     let directoryHandle;
     try{directoryHandle=await requestDownloadDirectory()}
     catch(error){if(error.name!=='AbortError')alert(error.message||'Não foi possível obter permissão para salvar os arquivos.');return}
@@ -207,7 +208,7 @@
     let completed=0;
     for(let index=0;index<studies.length;index++){
       updateQueueItem(index,'active');
-      queueMessage.textContent=`Compactando ${index+1} de ${studies.length}…`;
+      queueMessage.textContent=`Baixando ${index+1} de ${studies.length}…`;
       try{await requestDownload(studies[index].study_instance_uid,directoryHandle);updateQueueItem(index,'done')}
       catch{updateQueueItem(index,'error')}
       completed++;

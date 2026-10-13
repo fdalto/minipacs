@@ -4,8 +4,6 @@ import re
 import secrets
 import threading
 import time
-import zipfile
-from contextlib import contextmanager
 from pathlib import Path
 from typing import Annotated
 
@@ -15,23 +13,20 @@ from fastapi import Depends, FastAPI, Form, HTTPException, Request, Response
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from starlette.background import BackgroundTask
 from starlette.middleware.cors import CORSMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 
 from .cleanup import delete_study
 from .config import load_settings
-from .db import audit, connect, get_instances, get_study, initialize, list_studies, summary
+from .db import audit, connect, get_study, initialize, list_studies, summary
 from .dicom_uid import validate_uid
 from .logging_utils import configure_logging
-from .zip_queue import ZipBuildQueue, ZipQueueTimeout
 
 settings = load_settings()
 settings.ensure_directories()
 initialize(settings.db_path)
 logger = configure_logging("web", settings)
-zip_build_queue = ZipBuildQueue(settings.max_concurrent_zip_builds)
 weasis_link_serializer = URLSafeTimedSerializer(settings.session_secret, salt="minipacs-weasis-download")
 WEASIS_LINK_TTL_SECONDS = 60
 
@@ -104,75 +99,14 @@ def safe_download_name(study: dict) -> str:
     return safe or "study"
 
 
-def study_files(study_uid: str) -> list[tuple[dict, Path]]:
-    files: list[tuple[dict, Path]] = []
-    for instance in get_instances(settings.db_path, study_uid):
-        candidate = (settings.data_dir / instance["file_path"]).resolve()
-        # The database only stores internal relative paths; keep a second guard for corrupted rows.
-        if settings.data_dir.resolve() not in candidate.parents or not candidate.is_file():
-            raise HTTPException(409, "study files are not currently available")
-        files.append((instance, candidate))
-    return files
-
-
-@contextmanager
-def download_locks(studies: list[dict]):
-    locks: list[Path] = []
-    try:
-        for study in studies:
-            try:
-                study_uid = validate_uid(study["study_instance_uid"])
-            except ValueError:
-                raise HTTPException(409, "study has an invalid identifier")
-            lock = settings.data_dir / study_uid / ".download.lock"
-            try:
-                lock.touch(exist_ok=False)
-            except FileExistsError:
-                raise HTTPException(409, "study is already being downloaded")
-            locks.append(lock)
-        yield
-    finally:
-        for lock in locks:
-            lock.unlink(missing_ok=True)
-
-
-def create_zip(studies: list[dict], bulk: bool) -> Path:
-    token = secrets.token_urlsafe(16)
-    target = settings.tmp_dir / f"download-{token}.zip"
-    used: set[str] = set()
-    try:
-        with zip_build_queue.slot(settings.zip_queue_timeout_seconds):
-            with download_locks(studies), zipfile.ZipFile(target, "w", compression=zipfile.ZIP_DEFLATED, allowZip64=True) as archive:
-                for study in studies:
-                    base = safe_download_name(study) if bulk else study["study_instance_uid"]
-                    if bulk:
-                        original = base
-                        sequence = 2
-                        while base in used:
-                            base = f"{original}_{sequence}"
-                            sequence += 1
-                        used.add(base)
-                    for instance, file_path in study_files(study["study_instance_uid"]):
-                        archive_name = f"{base}/{instance['series_instance_uid']}/{instance['sop_instance_uid']}.dcm"
-                        archive.write(file_path, archive_name)
-    except ZipQueueTimeout as exc:
-        target.unlink(missing_ok=True)
-        raise HTTPException(
-            status_code=503,
-            detail="ZIP generation queue is busy; try again shortly",
-            headers={"Retry-After": "60"},
-        ) from exc
-    except Exception:
-        target.unlink(missing_ok=True)
-        raise
+def ready_archive(study: dict) -> Path:
+    if study["status"] != "ready" or not study.get("archive_path"):
+        raise HTTPException(status_code=409, detail="study is still being prepared", headers={"Retry-After": "30"})
+    archive_name = str(study["archive_path"])
+    target = (settings.archive_dir / archive_name).resolve()
+    if target.parent != settings.archive_dir.resolve() or not target.is_file():
+        raise HTTPException(status_code=503, detail="study archive is temporarily unavailable", headers={"Retry-After": "30"})
     return target
-
-
-def remove_temp(path: Path) -> None:
-    try:
-        path.unlink(missing_ok=True)
-    except OSError:
-        logger.warning("Could not remove completed temporary ZIP")
 
 
 @app.get("/health")
@@ -268,11 +202,11 @@ def download_study(study_uid: str, username: Annotated[str, Depends(current_user
     study = get_study(settings.db_path, study_uid)
     if not study:
         raise HTTPException(404, "study not found")
-    target = create_zip([study], bulk=False)
+    target = ready_archive(study)
     with connect(settings.db_path) as conn:
         audit(conn, username, "DOWNLOAD", study_uid)
         conn.commit()
-    return FileResponse(target, media_type="application/zip", filename=f"{safe_download_name(study)}.zip", background=BackgroundTask(remove_temp, target))
+    return FileResponse(target, media_type="application/zip", filename=f"{safe_download_name(study)}.zip", headers={"Cache-Control": "no-store"})
 
 
 @app.post("/api/studies/{study_uid}/weasis-link")
@@ -280,12 +214,9 @@ def create_weasis_link(study_uid: str, request: Request, username: Annotated[str
     study = get_study(settings.db_path, study_uid)
     if not study:
         raise HTTPException(404, "study not found")
-    target = create_zip([study], bulk=False)
-    token = weasis_link_serializer.dumps({"study_uid": study_uid, "username": username, "zip_name": target.name})
+    ready_archive(study)
+    token = weasis_link_serializer.dumps({"study_uid": study_uid, "username": username})
     download_url = str(request.url_for("weasis_download", study_uid=study_uid).include_query_params(token=token))
-    cleanup_timer = threading.Timer(WEASIS_LINK_TTL_SECONDS, remove_temp, args=(target,))
-    cleanup_timer.daemon = True
-    cleanup_timer.start()
     with connect(settings.db_path) as conn:
         audit(conn, username, "WEASIS_LINK", study_uid)
         conn.commit()
@@ -300,46 +231,30 @@ def weasis_download(study_uid: str, token: str):
         raise HTTPException(401, "Weasis download link has expired") from exc
     except BadSignature as exc:
         raise HTTPException(401, "invalid Weasis download link") from exc
-    zip_name = payload.get("zip_name") if isinstance(payload, dict) else None
     if (
         not isinstance(payload, dict)
         or payload.get("study_uid") != study_uid
         or not isinstance(payload.get("username"), str)
-        or not isinstance(zip_name, str)
-        or Path(zip_name).name != zip_name
-        or not zip_name.startswith("download-")
-        or not zip_name.endswith(".zip")
     ):
         raise HTTPException(403, "Weasis download link does not match this study")
-    target = settings.tmp_dir / zip_name
-    if not target.is_file():
-        raise HTTPException(410, "Weasis download link is no longer available")
+    study = get_study(settings.db_path, study_uid)
+    if not study:
+        raise HTTPException(404, "study not found")
+    target = ready_archive(study)
     with connect(settings.db_path) as conn:
         audit(conn, payload["username"][:100], "WEASIS_DOWNLOAD", study_uid)
         conn.commit()
     return FileResponse(
         target,
         media_type="application/zip",
-        filename="study.zip",
+        filename=f"{safe_download_name(study)}.zip",
         headers={"Cache-Control": "no-store"},
     )
 
 
 @app.post("/download/bulk")
 async def download_bulk(request: Request, username: Annotated[str, Depends(require_mutation)]):
-    csrf(request)
-    body = await request.json()
-    uids = validate_uid_list(body.get("study_uids"))
-    chosen = [get_study(settings.db_path, uid) for uid in uids]
-    studies_to_zip = [item for item in chosen if item]
-    total = sum(int(item["total_size_bytes"]) for item in studies_to_zip)
-    if not studies_to_zip or total > settings.max_bulk_bytes:
-        raise HTTPException(400, "requested studies exceed permitted download limits")
-    target = create_zip(studies_to_zip, bulk=True)
-    with connect(settings.db_path) as conn:
-        audit(conn, username, "BULK_DOWNLOAD", details=f"studies={len(studies_to_zip)}")
-        conn.commit()
-    return FileResponse(target, media_type="application/zip", filename="minipacs-studies.zip", background=BackgroundTask(remove_temp, target))
+    raise HTTPException(410, "bulk archive generation has been removed; download ready studies individually")
 
 
 def external_study(study: dict) -> dict[str, object]:
@@ -381,11 +296,11 @@ def external_download_study(study_uid: str, principal: Annotated[str, Depends(ex
     study = get_study(settings.db_path, study_uid)
     if not study:
         raise HTTPException(404, "study not found")
-    target = create_zip([study], bulk=False)
+    target = ready_archive(study)
     with connect(settings.db_path) as conn:
         audit(conn, principal, "API_DOWNLOAD", study_uid)
         conn.commit()
-    return FileResponse(target, media_type="application/zip", filename=f"{safe_download_name(study)}.zip", background=BackgroundTask(remove_temp, target))
+    return FileResponse(target, media_type="application/zip", filename=f"{safe_download_name(study)}.zip", headers={"Cache-Control": "no-store"})
 
 
 def run() -> None:

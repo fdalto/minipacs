@@ -14,6 +14,7 @@ def _bool(value: str, default: bool = False) -> bool:
 class Settings:
     root: Path
     data_dir: Path
+    archive_dir: Path
     db_path: Path
     tmp_dir: Path
     logs_dir: Path
@@ -31,13 +32,16 @@ class Settings:
     max_dicom_file_bytes: int
     max_concurrent_zip_builds: int
     zip_queue_timeout_seconds: int
+    zip_stability_seconds: int
+    zip_worker_interval_seconds: int
+    zip_packing_lease_seconds: int
     external_api_token_hash: str
     external_api_token_name: str
     external_api_allowed_origins: tuple[str, ...]
     external_api_rate_limit_per_minute: int
 
     def ensure_directories(self) -> None:
-        for path in (self.data_dir, self.db_path.parent, self.tmp_dir, self.logs_dir):
+        for path in (self.data_dir, self.archive_dir, self.db_path.parent, self.tmp_dir, self.logs_dir):
             path.mkdir(parents=True, exist_ok=True)
 
 
@@ -60,6 +64,7 @@ def load_settings() -> Settings:
     return Settings(
         root=root,
         data_dir=state_root / "data",
+        archive_dir=state_root / "archives",
         db_path=state_root / "db" / "minipacs.sqlite3",
         tmp_dir=state_root / "tmp",
         logs_dir=state_root / "logs",
@@ -77,6 +82,9 @@ def load_settings() -> Settings:
         max_dicom_file_bytes=max(1, int(os.getenv("MAX_DICOM_FILE_BYTES", str(512 * 1024**2)))),
         max_concurrent_zip_builds=max(1, int(os.getenv("MAX_CONCURRENT_ZIP_BUILDS", "1"))),
         zip_queue_timeout_seconds=max(1, int(os.getenv("ZIP_QUEUE_TIMEOUT_SECONDS", "3300"))),
+        zip_stability_seconds=max(1, int(os.getenv("ZIP_STABILITY_SECONDS", "90"))),
+        zip_worker_interval_seconds=max(1, int(os.getenv("ZIP_WORKER_INTERVAL_SECONDS", "30"))),
+        zip_packing_lease_seconds=max(60, int(os.getenv("ZIP_PACKING_LEASE_SECONDS", "3600"))),
         external_api_token_hash=os.getenv("EXTERNAL_API_TOKEN_HASH", "").strip(),
         external_api_token_name=os.getenv("EXTERNAL_API_TOKEN_NAME", "external-api").strip()[:100] or "external-api",
         external_api_allowed_origins=tuple(

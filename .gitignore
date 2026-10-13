@@ -6,10 +6,12 @@ __pycache__/
 .pytest_cache/
 *.py[cod]
 data/*
+archives/*
 db/*
 tmp/*
 logs/*
 !data/.gitkeep
+!archives/.gitkeep
 !db/.gitkeep
 !tmp/.gitkeep
 !logs/.gitkeep

@@ -1,0 +1,1 @@
+.study-status{display:inline-flex;align-items:center;border-radius:999px;padding:4px 9px;font-size:12px;font-weight:700;white-space:nowrap}.study-status.receiving{background:#fff4dd;color:#8a5a00}.study-status.packing{background:#eaf3ff;color:#1765c1}.study-status.ready{background:#eaf8f0;color:#187d45}.study-status.deleting{background:#fff0f2;color:#a51f32}

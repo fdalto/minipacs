@@ -10,6 +10,7 @@ services:
       - "127.0.0.1:8787:8000"
     volumes:
       - ./data:/opt/minipacs/data
+      - ./archives:/opt/minipacs/archives
       - ./db:/opt/minipacs/db
       - ./tmp:/opt/minipacs/tmp
       - ./logs:/opt/minipacs/logs
@@ -42,6 +43,7 @@ services:
       - "${DICOM_BIND_ADDRESS:-0.0.0.0}:${DICOM_PORT:-11112}:11112"
     volumes:
       - ./data:/opt/minipacs/data
+      - ./archives:/opt/minipacs/archives
       - ./db:/opt/minipacs/db
       - ./tmp:/opt/minipacs/tmp
       - ./logs:/opt/minipacs/logs
@@ -61,10 +63,36 @@ services:
       RETENTION_DAYS: ${RETENTION_DAYS:-15}
     volumes:
       - ./data:/opt/minipacs/data
+      - ./archives:/opt/minipacs/archives
       - ./db:/opt/minipacs/db
       - ./tmp:/opt/minipacs/tmp
       - ./logs:/opt/minipacs/logs
     restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+
+  zip-worker:
+    image: minipacs:local
+    build: .
+    command: ["python", "-m", "app.zip_worker"]
+    env_file: .env
+    environment:
+      APP_ROOT: /opt/minipacs
+    volumes:
+      - ./data:/opt/minipacs/data
+      - ./archives:/opt/minipacs/archives
+      - ./db:/opt/minipacs/db
+      - ./logs:/opt/minipacs/logs
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-m", "app.zip_worker", "--healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
     security_opt:
       - no-new-privileges:true
     cap_drop:

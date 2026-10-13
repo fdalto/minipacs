@@ -88,6 +88,7 @@ def build_handlers(settings: Settings):
                     raise
                 temporary.unlink(missing_ok=True)
                 if added:
+                    (settings.archive_dir / f"{study_uid}.zip").unlink(missing_ok=True)
                     logger.info("Stored DICOM SOP instance for study %s", study_uid)
                 else:
                     if created_target:
